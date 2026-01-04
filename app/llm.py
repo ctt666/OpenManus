@@ -30,7 +30,6 @@ from app.schema import (
     ToolChoice,
 )
 
-
 REASONING_MODELS = ["o1", "o3-mini"]
 MULTIMODAL_MODELS = [
     "gpt-4-vision-preview",
@@ -39,6 +38,11 @@ MULTIMODAL_MODELS = [
     "claude-3-opus-20240229",
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
+    # Qwen多模态模型
+    "qwen3-omni-flash",
+    "qwen-vl-max",
+    "qwen-vl-plus",
+    "qwen2-vl",
 ]
 
 
@@ -240,11 +244,11 @@ class LLM:
         # Only track tokens if max_input_tokens is set
         self.total_input_tokens += input_tokens
         self.total_completion_tokens += completion_tokens
-        logger.info(
-            f"Token usage: Input={input_tokens}, Completion={completion_tokens}, "
-            f"Cumulative Input={self.total_input_tokens}, Cumulative Completion={self.total_completion_tokens}, "
-            f"Total={input_tokens + completion_tokens}, Cumulative Total={self.total_input_tokens + self.total_completion_tokens}"
-        )
+        # logger.debug(
+        #     f"Token usage: Input={input_tokens}, Completion={completion_tokens}, "
+        #     f"Cumulative Input={self.total_input_tokens}, Cumulative Completion={self.total_completion_tokens}, "
+        #     f"Total={input_tokens + completion_tokens}, Cumulative Total={self.total_input_tokens + self.total_completion_tokens}"
+        # )
 
     def check_token_limit(self, input_tokens: int) -> bool:
         """Check if token limits are exceeded"""
@@ -262,6 +266,44 @@ class LLM:
             return f"Request may exceed input token limit (Current: {self.total_input_tokens}, Needed: {input_tokens}, Max: {self.max_input_tokens})"
 
         return "Token limit exceeded"
+
+    def truncate_messages(self, messages: List[dict], max_tokens: int) -> List[dict]:
+        """
+        Truncate messages to fit within token limit while preserving most recent interactions.
+
+        Args:
+            messages: List of messages to truncate
+            max_tokens: Maximum allowed tokens
+
+        Returns:
+            List[dict]: Truncated list of messages
+        """
+        # Always keep system messages if present
+        system_messages = [m for m in messages if m["role"] == "system"]
+        non_system_messages = [m for m in messages if m["role"] != "system"]
+
+        # Calculate tokens for system messages
+        system_tokens = self.count_message_tokens(system_messages)
+        remaining_tokens = max_tokens - system_tokens
+
+        # If no space for other messages, return only system messages
+        if remaining_tokens <= 0:
+            logger.warning("Token limit only allows system messages")
+            return system_messages
+
+        # Start from most recent messages and work backwards
+        truncated_messages = []
+        current_tokens = 0
+
+        for message in reversed(non_system_messages):
+            message_tokens = self.count_message_tokens([message])
+            if current_tokens + message_tokens <= remaining_tokens:
+                truncated_messages.insert(0, message)
+                current_tokens += message_tokens
+            else:
+                break
+
+        return system_messages + truncated_messages
 
     @staticmethod
     def format_messages(
@@ -289,6 +331,8 @@ class LLM:
             ... ]
             >>> formatted = LLM.format_messages(msgs)
         """
+        import json
+
         formatted_messages = []
 
         for message in messages:
@@ -300,6 +344,23 @@ class LLM:
                 # If message is a dict, ensure it has required fields
                 if "role" not in message:
                     raise ValueError("Message dict must contain 'role' field")
+
+                # ============ 新增：处理多模态消息（JSON格式） ============
+                if supports_images and isinstance(message.get("content"), str):
+                    try:
+                        # 尝试解析JSON格式的多模态消息
+                        content_obj = json.loads(message["content"])
+                        if isinstance(content_obj, dict) and content_obj.get(
+                            "multimodal"
+                        ):
+                            # 提取真实的多模态content数组
+                            message["content"] = content_obj.get("content", [])
+                            logger.debug(
+                                f"✨ 解析多模态消息，包含 {len(message['content'])} 个部分"
+                            )
+                    except (json.JSONDecodeError, TypeError):
+                        # 不是JSON格式，保持原样
+                        pass
 
                 # Process base64 images if present and model supports images
                 if supports_images and message.get("base64_image"):
@@ -362,7 +423,7 @@ class LLM:
         self,
         messages: List[Union[dict, Message]],
         system_msgs: Optional[List[Union[dict, Message]]] = None,
-        stream: bool = True,
+        stream: bool = False,
         temperature: Optional[float] = None,
     ) -> str:
         """
@@ -397,15 +458,16 @@ class LLM:
             # Calculate input token count
             input_tokens = self.count_message_tokens(messages)
 
-            # Check if token limits are exceeded
-            if not self.check_token_limit(input_tokens):
-                error_message = self.get_limit_error_message(input_tokens)
-                # Raise a special exception that won't be retried
-                raise TokenLimitExceeded(error_message)
+            # If token limit exceeded, truncate messages
+            if self.max_input_tokens and input_tokens > self.max_input_tokens:
+                messages = self.truncate_messages(messages, self.max_input_tokens)
+                input_tokens = self.count_message_tokens(messages)
+                logger.debug(f"input tokens after truncate: {input_tokens}")
 
             params = {
                 "model": self.model,
                 "messages": messages,
+                "presence_penalty": 1.5,
             }
 
             if self.model in REASONING_MODELS:
@@ -416,48 +478,77 @@ class LLM:
                     temperature if temperature is not None else self.temperature
                 )
 
-            if not stream:
-                # Non-streaming request
-                response = await self.client.chat.completions.create(
-                    **params, stream=False
-                )
+            logger.debug(f"*****************llm params: {params}")
+            if stream:
+                # logger.info(f"llm request prompt: {messages}")
+                # Streaming request
+                try:
+                    completion: ChatCompletion = (
+                        await self.client.chat.completions.create(
+                            **params,
+                            extra_body={
+                                "enable_thinking": False,
+                            },
+                            stream=True,
+                        )
+                    )
 
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
+                    response = []
+                    async for chunk in completion:
+                        if not chunk.choices:
+                            if hasattr(chunk, "usage") and chunk.usage:
+                                print("\nUsage:")
+                                print(chunk.usage)
+                            continue
 
-                # Update token counts
-                self.update_token_count(
-                    response.usage.prompt_tokens, response.usage.completion_tokens
-                )
+                        if (
+                            hasattr(chunk.choices[0].delta, "content")
+                            and chunk.choices[0].delta.content
+                        ):
+                            content = chunk.choices[0].delta.content
+                            response.append(content)
 
-                return response.choices[0].message.content
+                    final_response = "".join(response)
+                    print(f"*****************llm response: {final_response}")
+                    return final_response
 
-            # Streaming request, For streaming, update estimated token count before making the request
-            self.update_token_count(input_tokens)
+                except Exception as e:
+                    logger.error(f"Error in streaming response: {e}")
+                    # 如果流式处理失败，尝试非流式请求作为备选
+                    logger.info("Falling back to non-streaming request")
+                    try:
+                        completion: ChatCompletion = (
+                            await self.client.chat.completions.create(
+                                **params,
+                                extra_body={
+                                    "enable_thinking": False,
+                                },
+                                stream=False,
+                            )
+                        )
+                        response_content = completion.choices[0].message.content
+                        print(
+                            f"*****************llm response (fallback): {response_content}"
+                        )
+                        return response_content
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback request also failed: {fallback_error}")
+                        raise fallback_error
 
-            response = await self.client.chat.completions.create(**params, stream=True)
+            response = await self.client.chat.completions.create(**params, stream=False)
+            print(f"*****************llm response: {response}")
 
-            collected_messages = []
-            completion_text = ""
-            async for chunk in response:
-                chunk_message = chunk.choices[0].delta.content or ""
-                collected_messages.append(chunk_message)
-                completion_text += chunk_message
-                print(chunk_message, end="", flush=True)
-
-            print()  # Newline after streaming
-            full_response = "".join(collected_messages).strip()
-            if not full_response:
-                raise ValueError("Empty response from streaming LLM")
-
-            # estimate completion tokens for streaming response
-            completion_tokens = self.count_tokens(completion_text)
-            logger.info(
-                f"Estimated completion tokens for streaming response: {completion_tokens}"
+            if not response.choices or not response.choices[0].message:
+                logger.error(response)
+                # raise ValueError("Invalid or empty response from LLM")
+                return None
+            # Update token counts
+            self.update_token_count(
+                response.usage.prompt_tokens, response.usage.completion_tokens
             )
-            self.total_completion_tokens += completion_tokens
 
-            return full_response
+            logger.debug(f"response content: {response.choices[0].message.content}")
+            return response.choices[0].message.content
 
         except TokenLimitExceeded:
             # Re-raise token limit errors without logging
@@ -474,8 +565,8 @@ class LLM:
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise
-        except Exception:
-            logger.exception(f"Unexpected error in ask")
+        except Exception as e:
+            logger.exception(f"Unexpected error in ask: {e}")
             raise
 
     @retry(
@@ -537,9 +628,7 @@ class LLM:
             multimodal_content = (
                 [{"type": "text", "text": content}]
                 if isinstance(content, str)
-                else content
-                if isinstance(content, list)
-                else []
+                else content if isinstance(content, list) else []
             )
 
             # Add images to content
@@ -569,8 +658,13 @@ class LLM:
 
             # Calculate tokens and check limits
             input_tokens = self.count_message_tokens(all_messages)
-            if not self.check_token_limit(input_tokens):
-                raise TokenLimitExceeded(self.get_limit_error_message(input_tokens))
+
+            # If token limit exceeded, truncate messages
+            if self.max_input_tokens and input_tokens > self.max_input_tokens:
+                all_messages = self.truncate_messages(
+                    all_messages, self.max_input_tokens
+                )
+                input_tokens = self.count_message_tokens(all_messages)
 
             # Set up API parameters
             params = {
@@ -647,7 +741,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         timeout: int = 300,
         tools: Optional[List[dict]] = None,
-        tool_choice: TOOL_CHOICE_TYPE = ToolChoice.AUTO,  # type: ignore
+        tool_choice: str = ToolChoice.AUTO.value,  # type: ignore
         temperature: Optional[float] = None,
         **kwargs,
     ) -> ChatCompletionMessage | None:
@@ -673,10 +767,6 @@ class LLM:
             Exception: For unexpected errors
         """
         try:
-            # Validate tool_choice
-            if tool_choice not in TOOL_CHOICE_VALUES:
-                raise ValueError(f"Invalid tool_choice: {tool_choice}")
-
             # Check if the model supports images
             supports_images = self.model in MULTIMODAL_MODELS
 
@@ -689,26 +779,20 @@ class LLM:
 
             # Calculate input token count
             input_tokens = self.count_message_tokens(messages)
-
             # If there are tools, calculate token count for tool descriptions
             tools_tokens = 0
             if tools:
                 for tool in tools:
                     tools_tokens += self.count_tokens(str(tool))
-
             input_tokens += tools_tokens
 
-            # Check if token limits are exceeded
-            if not self.check_token_limit(input_tokens):
-                error_message = self.get_limit_error_message(input_tokens)
-                # Raise a special exception that won't be retried
-                raise TokenLimitExceeded(error_message)
-
-            # Validate tools if provided
-            if tools:
-                for tool in tools:
-                    if not isinstance(tool, dict) or "type" not in tool:
-                        raise ValueError("Each tool must be a dict with 'type' field")
+            # If token limit exceeded, truncate messages
+            if self.max_input_tokens and input_tokens > self.max_input_tokens:
+                messages = self.truncate_messages(
+                    messages, self.max_input_tokens - tools_tokens
+                )
+                input_tokens = self.count_message_tokens(messages) + tools_tokens
+                logger.info(f"input tokens after truncate: {input_tokens}")
 
             # Set up the completion request
             params = {
@@ -717,9 +801,13 @@ class LLM:
                 "tools": tools,
                 "tool_choice": tool_choice,
                 "timeout": timeout,
+                "presence_penalty": 2,
+                "top_p": 0.95,
+                "extra_body": {"top_k": 20},
                 **kwargs,
             }
 
+            # logger.info(f"llm request prompt: {messages}")
             if self.model in REASONING_MODELS:
                 params["max_completion_tokens"] = self.max_tokens
             else:
@@ -729,13 +817,14 @@ class LLM:
                 )
 
             params["stream"] = False  # Always use non-streaming for tool requests
-            response: ChatCompletion = await self.client.chat.completions.create(
-                **params
+            logger.info(f"*****************llm params: {params}")
+            response = await self.client.chat.completions.create(
+                **params,
             )
 
             # Check if response is valid
             if not response.choices or not response.choices[0].message:
-                print(response)
+                logger.error(response)
                 # raise ValueError("Invalid or empty response from LLM")
                 return None
 
@@ -744,8 +833,10 @@ class LLM:
                 response.usage.prompt_tokens, response.usage.completion_tokens
             )
 
+            # logger.info(
+            #     f"response content: {response.choices[0].message.content}, resoning content: {response.choices[0].message.reasoning_content}, tools: {response.choices[0].message.tool_calls}"
+            # )
             return response.choices[0].message
-
         except TokenLimitExceeded:
             # Re-raise token limit errors without logging
             raise
@@ -763,4 +854,99 @@ class LLM:
             raise
         except Exception as e:
             logger.error(f"Unexpected error in ask_tool: {e}")
+            raise
+
+    async def stream_ask(
+        self,
+        messages: List[Union[dict, Message]],
+        system_msgs: Optional[List[Union[dict, Message]]] = None,
+        temperature: Optional[float] = None,
+    ):
+        """
+        流式调用LLM，逐token返回（async generator）
+
+        Args:
+            messages: 对话消息列表
+            system_msgs: 系统消息（可选）
+            temperature: 采样温度
+
+        Yields:
+            str: 生成的文本chunk
+
+        Example:
+            async for chunk in llm.stream_ask(messages):
+                print(chunk, end='', flush=True)
+        """
+        try:
+            # 检查模型是否支持多模态
+            supports_images = self.model in MULTIMODAL_MODELS
+
+            # 格式化消息
+            if system_msgs:
+                system_msgs = self.format_messages(system_msgs, supports_images)
+                messages = system_msgs + self.format_messages(messages, supports_images)
+            else:
+                messages = self.format_messages(messages, supports_images)
+
+            # 计算token数
+            input_tokens = self.count_message_tokens(messages)
+
+            # 如果超过token限制，截断消息
+            if self.max_input_tokens and input_tokens > self.max_input_tokens:
+                messages = self.truncate_messages(messages, self.max_input_tokens)
+                input_tokens = self.count_message_tokens(messages)
+                logger.debug(f"流式输入tokens（截断后）: {input_tokens}")
+
+            # 构造请求参数
+            params = {
+                "model": self.model,
+                "messages": messages,
+                "stream": True,  # 启用流式
+            }
+
+            # 推理模型使用不同的参数
+            if self.model in REASONING_MODELS:
+                params["max_completion_tokens"] = self.max_tokens
+            else:
+                params["max_tokens"] = self.max_tokens
+                params["temperature"] = (
+                    temperature if temperature is not None else self.temperature
+                )
+
+            logger.debug(
+                f"🌊 流式请求参数: model={self.model}, max_tokens={self.max_tokens}"
+            )
+
+            # 发起流式请求
+            completion = await self.client.chat.completions.create(**params)
+
+            # 逐chunk yield
+            total_tokens = []
+            async for chunk in completion:
+                if not chunk.choices:
+                    # 处理usage信息
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        logger.debug(f"流式调用token使用: {chunk.usage}")
+                    continue
+
+                # 提取content
+                if (
+                    hasattr(chunk.choices[0].delta, "content")
+                    and chunk.choices[0].delta.content
+                ):
+                    content = chunk.choices[0].delta.content
+                    total_tokens.append(content)
+                    yield content
+
+            # 记录完整响应（用于调试）
+            final_response = "".join(total_tokens)
+            logger.debug(f"🌊 流式输出完成，总长度: {len(final_response)} 字符")
+
+        except TokenLimitExceeded:
+            raise
+        except OpenAIError as oe:
+            logger.error(f"流式调用OpenAI API错误: {oe}")
+            raise
+        except Exception as e:
+            logger.error(f"流式调用意外错误: {e}")
             raise

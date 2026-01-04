@@ -1,0 +1,282 @@
+/* Flow 展示样式 */
+.flow-display-container {
+    margin: 20px 0;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    background: #fafafa;
+    overflow: hidden;
+}
+
+.flow-plan-section,
+.flow-steps-section,
+.flow-summary-section {
+    padding: 15px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.flow-plan-section:last-child,
+.flow-steps-section:last-child,
+.flow-summary-section:last-child {
+    border-bottom: none;
+}
+
+.flow-plan-header,
+.flow-steps-header,
+.flow-summary-header {
+    margin-bottom: 10px;
+}
+
+.flow-plan-header h4,
+.flow-steps-header h4,
+.flow-summary-header h4 {
+    margin: 0;
+    color: #333;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.plan-content pre,
+.summary-content pre {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    padding: 10px;
+    margin: 0;
+    white-space: pre-wrap;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.flow-step {
+    margin-bottom: 15px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    overflow: hidden;
+}
+
+.flow-step.running {
+    border-left: 4px solid #007bff;
+}
+
+.flow-step.completed {
+    border-left: 4px solid #28a745;
+}
+
+.flow-step.failed {
+    border-left: 4px solid #dc3545;
+}
+
+.step-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 15px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.step-number {
+    background: #007bff;
+    color: white;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
+    margin-right: 10px;
+}
+
+.step-title {
+    flex: 1;
+    font-weight: 500;
+    color: #333;
+}
+
+.step-status {
+    font-size: 18px;
+    margin-left: 10px;
+}
+
+.step-content {
+    padding: 15px;
+}
+
+.step-description {
+    margin-bottom: 10px;
+    color: #666;
+    font-size: 14px;
+}
+
+.step-details {
+    border-top: 1px solid #e9ecef;
+    padding-top: 10px;
+}
+
+.step-detail {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 8px;
+    padding: 8px;
+    background: #f8f9fa;
+    border-radius: 4px;
+}
+
+.step-detail.think {
+    background: #fff3cd;
+    border-left: 3px solid #ffc107;
+}
+
+.step-detail.act {
+    background: #d1ecf1;
+    border-left: 3px solid #17a2b8;
+}
+
+.detail-type {
+    margin-right: 8px;
+    font-size: 16px;
+}
+
+.detail-content {
+    flex: 1;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #333;
+}
+
+/* 交互区域样式 */
+.interaction-section {
+    margin: 20px 0;
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 12px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    border-left: 4px solid #4CAF50;
+}
+
+.interaction-section .section-header h4 {
+    margin: 0 0 15px 0;
+    color: white;
+    font-size: 18px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.interaction-content {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 8px;
+    padding: 15px;
+}
+
+.interaction-message {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.interaction-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.interaction-text {
+    color: #333;
+    font-size: 16px;
+    line-height: 1.5;
+    font-weight: 500;
+}
+
+/* 轻量级交互标记样式 */
+.interaction-indicator {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 10px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #6c757d;
+}
+
+.interaction-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-icon {
+    font-size: 16px;
+}
+
+.status-text {
+    font-weight: 500;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .interaction-section {
+        margin: 15px 0;
+        padding: 15px;
+    }
+
+    .interaction-section .section-header h4 {
+        font-size: 16px;
+    }
+
+    .interaction-text {
+        font-size: 14px;
+    }
+
+    .interaction-indicator {
+        padding: 6px 10px;
+        font-size: 13px;
+    }
+
+    .status-icon {
+        font-size: 14px;
+    }
+}
+
+/* 已完成的执行阶段 */
+.execution-completed {
+    opacity: 0.8;
+    border-left: 4px solid #28a745;
+    /* 绿色边框表示完成 */
+    margin-bottom: 20px;
+}
+
+.execution-completed .flow-steps-section {
+    background-color: #f8f9fa;
+}
+
+/* 新的执行阶段 */
+.execution-phase-new {
+    border-left: 4px solid #007bff;
+    /* 蓝色边框表示新阶段 */
+    margin-top: 20px;
+    border-top: 2px solid #e9ecef;
+    padding-top: 20px;
+}
+
+/* 执行阶段标题 */
+.execution-phase-header {
+    background: #e3f2fd;
+    padding: 10px 15px;
+    margin-bottom: 15px;
+    border-radius: 6px;
+    border-left: 4px solid #2196f3;
+}
+
+.execution-phase-title {
+    margin: 0;
+    color: #1976d2;
+    font-size: 16px;
+    font-weight: 600;
+}

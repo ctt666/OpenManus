@@ -1,0 +1,25 @@
+{
+    "mcpServers": {
+        "playwright": {
+            "type": "stdio",
+            "command": "D:\\apps\\nodejs\\npx.cmd",
+            "args": [
+                "@playwright/mcp@latest"
+            ]
+        },
+        "osm-mcp-server": {
+            "type": "stdio",
+            "command": "uvx",
+            "args": [
+                "osm-mcp-server"
+            ]
+        },
+        "weather-mcp": {
+            "type": "stdio",
+            "command": "D:\\apps\\anaconda\\python.exe",
+            "args": [
+                "D:\\python_project\\Weather-MCP-ClaudeDesktop\\main.py"
+            ]
+        }
+    }
+}

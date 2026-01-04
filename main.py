@@ -2,6 +2,7 @@ import argparse
 import asyncio
 
 from app.agent.manus import Manus
+from app.agent.toolcall import ToolCallAgent
 from app.logger import logger
 
 
@@ -14,7 +15,8 @@ async def main():
     args = parser.parse_args()
 
     # Create and initialize Manus agent
-    agent = await Manus.create()
+    # agent = await Manus.create()
+    agent = ToolCallAgent()
     try:
         # Use command line prompt if provided, otherwise ask for input
         prompt = args.prompt if args.prompt else input("Enter your prompt: ")
@@ -23,7 +25,7 @@ async def main():
             return
 
         logger.warning("Processing your request...")
-        await agent.run(prompt)
+        await agent.think(prompt)
         logger.info("Request processing completed.")
     except KeyboardInterrupt:
         logger.warning("Operation interrupted.")

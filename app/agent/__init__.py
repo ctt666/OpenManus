@@ -4,6 +4,8 @@ from app.agent.mcp import MCPAgent
 from app.agent.react import ReActAgent
 from app.agent.swe import SWEAgent
 from app.agent.toolcall import ToolCallAgent
+from app.agent.image_generation import ImageGenerationAgent
+from app.agent.audio_generation import AudioGenerationAgent
 
 
 __all__ = [
@@ -13,4 +15,6 @@ __all__ = [
     "SWEAgent",
     "ToolCallAgent",
     "MCPAgent",
+    "ImageGenerationAgent",
+    "AudioGenerationAgent",
 ]

@@ -8,7 +8,6 @@ from app.logger import logger
 from app.prompt.browser import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import Message, ToolChoice
 from app.tool import BrowserUseTool, Terminate, ToolCollection
-from app.tool.sandbox.sb_browser_tool import SandboxBrowserTool
 
 
 # Avoid circular import if BrowserAgent needs BrowserContextHelper
@@ -23,10 +22,6 @@ class BrowserContextHelper:
 
     async def get_browser_state(self) -> Optional[dict]:
         browser_tool = self.agent.available_tools.get_tool(BrowserUseTool().name)
-        if not browser_tool:
-            browser_tool = self.agent.available_tools.get_tool(
-                SandboxBrowserTool().name
-            )
         if not browser_tool or not hasattr(browser_tool, "get_current_state"):
             logger.warning("BrowserUseTool not found or doesn't have get_current_state")
             return None
@@ -117,7 +112,7 @@ class BrowserAgent(ToolCallAgent):
         self.browser_context_helper = BrowserContextHelper(self)
         return self
 
-    async def think(self) -> bool:
+    async def think(self) -> (bool, str):
         """Process current state and decide next actions using tools, with browser state info added"""
         self.next_step_prompt = (
             await self.browser_context_helper.format_next_step_prompt()

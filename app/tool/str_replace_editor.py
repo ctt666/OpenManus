@@ -1,8 +1,11 @@
 """File and directory manipulation tool with sandbox support."""
-
+import asyncio
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, DefaultDict, List, Literal, Optional, get_args
+
+from sympy.codegen.ast import stdout
 
 from app.config import config
 from app.exceptions import ToolError
@@ -218,18 +221,29 @@ class StrReplaceEditor(BaseTool):
     @staticmethod
     async def _view_directory(path: PathLike, operator: FileOperator) -> CLIResult:
         """Display directory contents."""
-        find_cmd = f"find {path} -maxdepth 2 -not -path '*/\\.*'"
+        find_cmd = ""
+        # if sys.platform.startswith('linux'):
+        #     find_cmd = f"find {path} -maxdepth 2 -not -path '*/\\.*'"
+        # else:
+        #     find_cmd = f"dir {path}"
 
         # Execute command using the operator
-        returncode, stdout, stderr = await operator.run_command(find_cmd)
+        # returncode, stdout, stderr = await operator.run_command(find_cmd)
+        #
+        # if not stderr:
+        #     stdout = (
+        #         f"Here's the files and directories up to 2 levels deep in {path}, "
+        #         f"excluding hidden items:\n{stdout}\n"
+        #     )
+        directory = Path(path)
+        stdout = ""
+        for file_path in directory.iterdir():
+            # 确保是文件而不是目录
+            if file_path.is_file():
+                # 输出文件的绝对路径
+                stdout += f"{file_path.resolve()}\n"
 
-        if not stderr:
-            stdout = (
-                f"Here's the files and directories up to 2 levels deep in {path}, "
-                f"excluding hidden items:\n{stdout}\n"
-            )
-
-        return CLIResult(output=stdout, error=stderr)
+        return CLIResult(output=stdout)
 
     async def _view_file(
         self,
@@ -430,3 +444,13 @@ class StrReplaceEditor(BaseTool):
             + file_content
             + "\n"
         )
+
+async def main():
+    tool = StrReplaceEditor()
+    args = {'command': 'view', 'path': 'D:\\python_project\\OpenManus\\workspace'}
+    result = await tool.execute(**args)
+    print(result)
+#     D:\\python_project\\OpenManus\\workspace
+
+if __name__ == "__main__":
+    asyncio.run(main())

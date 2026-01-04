@@ -11,7 +11,6 @@ from app.prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
 from app.tool import CreateChatCompletion, Terminate, ToolCollection
 
-
 TOOL_CALL_REQUIRED = "Tool calls required but none provided"
 
 
@@ -27,7 +26,7 @@ class ToolCallAgent(ReActAgent):
     available_tools: ToolCollection = ToolCollection(
         CreateChatCompletion(), Terminate()
     )
-    tool_choices: TOOL_CHOICE_TYPE = ToolChoice.AUTO  # type: ignore
+    tool_choices: TOOL_CHOICE_TYPE = ToolChoice.AUTO.value  # type: ignore
     special_tool_names: List[str] = Field(default_factory=lambda: [Terminate().name])
 
     tool_calls: List[ToolCall] = Field(default_factory=list)
@@ -35,11 +34,14 @@ class ToolCallAgent(ReActAgent):
 
     max_steps: int = 30
     max_observe: Optional[Union[int, bool]] = None
+    multimodal_paths: Optional[dict] = None
 
-    async def think(self) -> bool:
+    async def think(self) -> (bool, str):
         """Process current state and decide next actions using tools"""
         if self.next_step_prompt:
-            user_msg = Message.user_message(self.next_step_prompt)
+            user_msg = Message.user_message(
+                self.next_step_prompt, multimodal_paths=self.multimodal_paths
+            )
             self.messages += [user_msg]
 
         try:
@@ -54,6 +56,11 @@ class ToolCallAgent(ReActAgent):
                 tools=self.available_tools.to_params(),
                 tool_choice=self.tool_choices,
             )
+            # print(f"tool call agent system messages===============: {self.system_prompt}\n, user massages================: {self.format_messages()}")
+            # print(f"think-ask tool response: {response}")
+        except asyncio.CancelledError:
+            logger.info("Think operation was cancelled")
+            raise
         except ValueError:
             raise
         except Exception as e:
@@ -69,16 +76,19 @@ class ToolCallAgent(ReActAgent):
                     )
                 )
                 self.state = AgentState.FINISHED
-                return False
+                return False, ""
             raise
 
         self.tool_calls = tool_calls = (
             response.tool_calls if response and response.tool_calls else []
         )
-        content = response.content if response and response.content else ""
+        content = response.content
+        if response is not None and hasattr(response, "reasoning_content"):
+            logger.info(f"✨ {self.name}'s thoughts: {response.reasoning_content}")
 
+        if content:
+            logger.info(f"Act content: {content}")
         # Log response info
-        logger.info(f"✨ {self.name}'s thoughts: {content}")
         logger.info(
             f"🛠️ {self.name} selected {len(tool_calls) if tool_calls else 0} tools to use"
         )
@@ -86,7 +96,6 @@ class ToolCallAgent(ReActAgent):
             logger.info(
                 f"🧰 Tools being prepared: {[call.function.name for call in tool_calls]}"
             )
-            logger.info(f"🔧 Tool arguments: {tool_calls[0].function.arguments}")
 
         try:
             if response is None:
@@ -100,8 +109,8 @@ class ToolCallAgent(ReActAgent):
                     )
                 if content:
                     self.memory.add_message(Message.assistant_message(content))
-                    return True
-                return False
+                    return True, content
+                return False, ""
 
             # Create and add assistant message
             assistant_msg = (
@@ -112,13 +121,13 @@ class ToolCallAgent(ReActAgent):
             self.memory.add_message(assistant_msg)
 
             if self.tool_choices == ToolChoice.REQUIRED and not self.tool_calls:
-                return True  # Will be handled in act()
+                return True, content  # Will be handled in act()
 
             # For 'auto' mode, continue with content if no commands but content exists
             if self.tool_choices == ToolChoice.AUTO and not self.tool_calls:
-                return bool(content)
+                return bool(content), content
 
-            return bool(self.tool_calls)
+            return bool(self.tool_calls), content
         except Exception as e:
             logger.error(f"🚨 Oops! The {self.name}'s thinking process hit a snag: {e}")
             self.memory.add_message(
@@ -126,7 +135,7 @@ class ToolCallAgent(ReActAgent):
                     f"Error encountered while processing: {str(e)}"
                 )
             )
-            return False
+            return False, ""
 
     async def act(self) -> str:
         """Execute tool calls and handle their results"""
@@ -142,21 +151,25 @@ class ToolCallAgent(ReActAgent):
             # Reset base64_image for each tool call
             self._current_base64_image = None
 
-            result = await self.execute_tool(command)
+            try:
+                result = await self.execute_tool(command)
+            except asyncio.CancelledError:
+                logger.info("Tool execution was cancelled")
+                raise
 
             if self.max_observe:
+                # todo: 需要优化，压缩，网页统一格式
                 result = result[: self.max_observe]
 
             logger.info(
                 f"🎯 Tool '{command.function.name}' completed its mission! Result: {result}"
             )
-
             # Add tool response to memory
             tool_msg = Message.tool_message(
                 content=result,
-                tool_call_id=command.id,
                 name=command.function.name,
-                base64_image=self._current_base64_image,
+                tool_call_id=command.id,
+                arguments=command.function.arguments,
             )
             self.memory.add_message(tool_msg)
             results.append(result)
@@ -177,8 +190,25 @@ class ToolCallAgent(ReActAgent):
             args = json.loads(command.function.arguments or "{}")
 
             # Execute the tool
-            logger.info(f"🔧 Activating tool: '{name}'...")
+            logger.info(f"🔧 Activating tool: '{name}', args: {args}")
             result = await self.available_tools.execute(name=name, tool_input=args)
+
+            # 特殊处理 ask_human 工具 - 设置标志让 agent 暂停执行
+            if (
+                name.lower() == "ask_human"
+                and isinstance(result, str)
+                and "INTERACTION_REQUIRED:" in result
+            ):
+                # 当 ask_human 工具返回 INTERACTION_REQUIRED 时，设置标志
+                # 让 BaseAgent 知道需要暂停执行
+                logger.info(f"🔄 AskHuman tool executed, setting interaction flag...")
+
+                # 设置一个标志，让 BaseAgent 知道需要暂停
+                self._interaction_required = True
+                self._interaction_message = result
+
+                # 返回特殊结果，让外部逻辑知道需要用户交互
+                return result
 
             # Handle special tools
             await self._handle_special_tool(name=name, result=result)
@@ -212,9 +242,17 @@ class ToolCallAgent(ReActAgent):
         if not self._is_special_tool(name):
             return
 
+        # 特殊处理 ask_human 工具
+        if name.lower() == "ask_human":
+            # 当 ask_human 工具被执行时，暂停执行等待用户响应
+            # 这里我们需要通过某种机制来暂停执行
+            # 由于我们无法直接在这里暂停，我们需要依赖外部的交互机制
+            logger.info(f"🔄 AskHuman tool executed, waiting for user response...")
+            # 不设置 FINISHED 状态，让执行继续
+            return
+
         if self._should_finish_execution(name=name, result=result, **kwargs):
             # Set agent state to finished
-            logger.info(f"🏁 Special tool '{name}' has completed the task!")
             self.state = AgentState.FINISHED
 
     @staticmethod
@@ -240,11 +278,14 @@ class ToolCallAgent(ReActAgent):
                     logger.error(
                         f"🚨 Error cleaning up tool '{tool_name}': {e}", exc_info=True
                     )
+        self.state = AgentState.IDLE
         logger.info(f"✨ Cleanup complete for agent '{self.name}'.")
 
-    async def run(self, request: Optional[str] = None) -> str:
+    async def run(
+        self,
+        request: Optional[str] = None,
+        stream_callback=None,
+        multimodal_paths: Optional[dict] = None,
+    ) -> str:
         """Run the agent with cleanup when done."""
-        try:
-            return await super().run(request)
-        finally:
-            await self.cleanup()
+        return await super().run(request, stream_callback, multimodal_paths)

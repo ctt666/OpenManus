@@ -1,8 +1,8 @@
-import logging
 import sys
 
+from app.logger import logger
 
-logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stderr)])
+logging.basicConfig(level=logger.info, handlers=[logging.StreamHandler(sys.stderr)])
 
 import argparse
 import asyncio
@@ -17,6 +17,7 @@ from app.logger import logger
 from app.tool.base import BaseTool
 from app.tool.bash import Bash
 from app.tool.browser_use_tool import BrowserUseTool
+from app.tool.google_custom_search import GoogleCustomSearchTool
 from app.tool.str_replace_editor import StrReplaceEditor
 from app.tool.terminate import Terminate
 
@@ -33,6 +34,7 @@ class MCPServer:
         self.tools["browser"] = BrowserUseTool()
         self.tools["editor"] = StrReplaceEditor()
         self.tools["terminate"] = Terminate()
+        self.tools["google_custom_search"] = GoogleCustomSearchTool()
 
     def register_tool(self, tool: BaseTool, method_name: Optional[str] = None) -> None:
         """Register a tool with parameter validation and documentation."""

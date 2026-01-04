@@ -15,7 +15,6 @@ from app.llm import LLM
 from app.tool.base import BaseTool, ToolResult
 from app.tool.web_search import WebSearch
 
-
 _BROWSER_DESCRIPTION = """\
 A powerful browser automation tool that allows interaction with web pages through various actions.
 * This tool provides commands for controlling a browser session, navigating web pages, and extracting information
@@ -431,7 +430,7 @@ Page content:
                     response = await self.llm.ask_tool(
                         messages,
                         tools=[extraction_function],
-                        tool_choice="required",
+                        tool_choice="auto",
                     )
 
                     if response and response.tool_calls:

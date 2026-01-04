@@ -1,3 +1,4 @@
+import asyncio
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -40,11 +41,21 @@ class BaseAgent(BaseModel, ABC):
     max_steps: int = Field(default=10, description="Maximum steps before termination")
     current_step: int = Field(default=0, description="Current step in execution")
 
+    # 多模态参数（可选）
+    multimodal_paths: Optional[dict] = Field(
+        default=None, description="多模态参数：modalities, audio, stream_options"
+    )
+
     duplicate_threshold: int = 2
 
     class Config:
         arbitrary_types_allowed = True
         extra = "allow"  # Allow extra fields for flexibility in subclasses
+
+    @abstractmethod
+    def set_prompt(self, render: dict):
+        """Set the prompt for the agent"""
+        pass
 
     @model_validator(mode="after")
     def initialize_agent(self) -> "BaseAgent":
@@ -113,45 +124,90 @@ class BaseAgent(BaseModel, ABC):
         kwargs = {"base64_image": base64_image, **(kwargs if role == "tool" else {})}
         self.memory.add_message(message_map[role](content, **kwargs))
 
-    async def run(self, request: Optional[str] = None) -> str:
-        """Execute the agent's main loop asynchronously.
+    async def run(
+        self,
+        request: Optional[str] = None,
+        stream_callback=None,
+        multimodal_paths: Optional[dict] = None,
+    ) -> str:
+        """
+        运行代理的主要执行循环
 
         Args:
-            request: Optional initial user request to process.
+            request: 用户请求
+            stream_callback: 流式回调函数，用于实时推送总结的chunk
+            multimodal_paths: 多模态参数（可选），如 audio, image, text
 
         Returns:
-            A string summarizing the execution results.
-
-        Raises:
-            RuntimeError: If the agent is not in IDLE state at start.
+            任务执行结果
         """
-        if self.state != AgentState.IDLE:
-            raise RuntimeError(f"Cannot run agent from state: {self.state}")
+        # 存储多模态参数到实例（无论是否为None都要设置，避免保留上次的值）
+        self.multimodal_paths = multimodal_paths
+        # if request:
+        #     self.memory.add_message(Message.user_message(request))
 
-        if request:
-            self.update_memory("user", request)
+        step = 0
+        consecutive_duplicates = 0
+        last_response = None
 
-        results: List[str] = []
-        async with self.state_context(AgentState.RUNNING):
-            while (
-                self.current_step < self.max_steps and self.state != AgentState.FINISHED
-            ):
-                self.current_step += 1
-                logger.info(f"Executing step {self.current_step}/{self.max_steps}")
-                step_result = await self.step()
+        while step < self.max_steps and self.state != AgentState.FINISHED:
+            try:
+                logger.info(f"Step {step} of {self.max_steps}")
 
-                # Check for stuck state
-                if self.is_stuck():
-                    self.handle_stuck_state()
+                # 检查是否被取消
+                try:
+                    # 检查当前任务是否被取消
+                    asyncio.current_task().get_name()
+                except asyncio.CancelledError:
+                    logger.info("Agent execution was cancelled")
+                    raise
 
-                results.append(f"Step {self.current_step}: {step_result}")
+                # 思考阶段
+                should_continue, content = await self.think()
+                if not should_continue:
+                    break
 
-            if self.current_step >= self.max_steps:
-                self.current_step = 0
-                self.state = AgentState.IDLE
-                results.append(f"Terminated: Reached max steps ({self.max_steps})")
-        await SANDBOX_CLIENT.cleanup()
-        return "\n".join(results) if results else "No steps executed"
+                # 行动阶段
+                if self.tool_calls:
+                    result = await self.act()
+
+                    # 检查行动结果是否包含交互需求
+                    if result and "INTERACTION_REQUIRED:" in result:
+                        logger.info(
+                            "🔄 Interaction required in act result, pausing execution..."
+                        )
+                        self.state = AgentState.IDLE
+                        return result
+
+                # 检查是否被取消（在行动后）
+                try:
+                    asyncio.current_task().get_name()
+                except asyncio.CancelledError:
+                    logger.info("Agent execution was cancelled after action")
+                    raise
+
+                # 检查重复响应
+                if content and content == last_response:
+                    logger.info(f"Duplicate response: {content}")
+                    consecutive_duplicates += 1
+                    if consecutive_duplicates >= self.duplicate_threshold:
+                        break
+                else:
+                    consecutive_duplicates = 0
+
+                last_response = content
+                step += 1
+
+            except Exception as e:
+                logger.error(f"🚨 Error in step {step}: {e}")
+                self.memory.add_message(
+                    Message.assistant_message(f"Error encountered: {str(e)}")
+                )
+                break
+
+        # 总结并返回结果（支持流式）
+        summary = await self.summarize(request, stream_callback=stream_callback)
+        return summary
 
     @abstractmethod
     async def step(self) -> str:
@@ -159,6 +215,10 @@ class BaseAgent(BaseModel, ABC):
 
         Must be implemented by subclasses to define specific behavior.
         """
+
+    @abstractmethod
+    async def summarize(self, request: str) -> str:
+        """Summarize the agent's work"""
 
     def handle_stuck_state(self):
         """Handle stuck state by adding a prompt to change strategy"""
@@ -194,3 +254,9 @@ class BaseAgent(BaseModel, ABC):
     def messages(self, value: List[Message]):
         """Set the list of messages in the agent's memory."""
         self.memory.messages = value
+
+    def format_messages(self) -> str:
+        format_str = ""
+        for message in self.messages:
+            format_str += f"{message.content},\n"
+        return format_str

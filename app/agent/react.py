@@ -4,8 +4,11 @@ from typing import Optional
 from pydantic import Field
 
 from app.agent.base import BaseAgent
+from app.config import config
 from app.llm import LLM
-from app.schema import AgentState, Memory
+from app.logger import logger
+from app.prompt.react import SUMMARIZE_PROMPT
+from app.schema import AgentState, Memory, Message
 
 
 class ReActAgent(BaseAgent, ABC):
@@ -14,6 +17,7 @@ class ReActAgent(BaseAgent, ABC):
 
     system_prompt: Optional[str] = None
     next_step_prompt: Optional[str] = None
+    summarize_prompt: str = SUMMARIZE_PROMPT
 
     llm: Optional[LLM] = Field(default_factory=LLM)
     memory: Memory = Field(default_factory=Memory)
@@ -23,7 +27,7 @@ class ReActAgent(BaseAgent, ABC):
     current_step: int = 0
 
     @abstractmethod
-    async def think(self) -> bool:
+    async def think(self) -> (bool, str):
         """Process current state and decide next action"""
 
     @abstractmethod
@@ -32,7 +36,63 @@ class ReActAgent(BaseAgent, ABC):
 
     async def step(self) -> str:
         """Execute a single step: think and act."""
-        should_act = await self.think()
+        should_act, thought = await self.think()
         if not should_act:
-            return "Thinking complete - no action needed"
-        return await self.act()
+            return thought
+        act_result = await self.act()
+        return f"{thought}\n{act_result}"
+
+    async def summarize(self, request: str, stream_callback=None) -> str:
+        """
+        总结任务执行结果
+
+        Args:
+            request: 原始任务请求
+            stream_callback: 流式回调函数，接收每个chunk
+
+        Returns:
+            完整的总结消息
+        """
+        summarize_prompt = self.summarize_prompt.format(
+            request=request, directory=config.workspace_root
+        )
+        user_msg = Message.user_message(summarize_prompt)
+        self.messages += [user_msg]
+
+        try:
+            # 如果提供了stream_callback，使用流式输出
+            if stream_callback:
+                logger.info(f"📤 [DEBUG] 使用流式模式进行summarize")
+                full_summary = []
+                chunk_count = 0
+                async for chunk in self.llm.stream_ask(messages=self.messages):
+                    chunk_count += 1
+                    full_summary.append(chunk)
+                    logger.info(
+                        f"📤 [DEBUG] 收到第{chunk_count}个chunk: {chunk[:50]}..."
+                    )
+                    await stream_callback(chunk)  # 实时推送到前端
+                    logger.info(f"📤 [DEBUG] chunk已发送到callback")
+
+                final_content = "".join(full_summary)
+                logger.info(
+                    f"📤 [DEBUG] 流式输出完成，共{chunk_count}个chunk，总长度{len(final_content)}字符"
+                )
+                response = Message.assistant_message(final_content)
+            else:
+                logger.info(f"📤 [DEBUG] 使用批量模式进行summarize")
+                # 回退到批量模式
+                response = await self.llm.ask(messages=self.messages)
+
+            logger.info(f"🎯 Summarization completed! Result: {response}")
+            return response
+        except Exception as e:
+            logger.error(f"🚨 Oops! The {self.name}'s thinking process hit a snag: {e}")
+            self.memory.add_message(
+                Message.assistant_message(
+                    f"Error encountered while processing: {str(e)}"
+                )
+            )
+            return Message.assistant_message(
+                "summary encountered an error, please try again"
+            )

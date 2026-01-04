@@ -1,7 +1,6 @@
-from typing import Any, AsyncIterable, ClassVar, Dict, List, Literal
-
+import httpx
+from typing import Any, Dict, AsyncIterable, Literal, List, ClassVar
 from pydantic import BaseModel
-
 from app.agent.manus import Manus
 
 
@@ -13,6 +12,7 @@ class ResponseFormat(BaseModel):
 
 
 class A2AManus(Manus):
+
     async def invoke(self, query, sessionId) -> str:
         config = {"configurable": {"thread_id": sessionId}}
         response = await self.run(query)

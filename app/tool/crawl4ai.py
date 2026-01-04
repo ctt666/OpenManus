@@ -248,7 +248,7 @@ class Crawl4aiTool(BaseTool):
 
             return ToolResult(output="\n".join(output_lines))
 
-        except ImportError:
+        except ImportError as e:
             error_msg = "Crawl4AI is not installed. Please install it with: pip install crawl4ai"
             logger.error(error_msg)
             return ToolResult(error=error_msg)

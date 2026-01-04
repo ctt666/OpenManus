@@ -53,5 +53,7 @@ class BaseFlow(BaseModel, ABC):
         self.agents[key] = agent
 
     @abstractmethod
-    async def execute(self, input_text: str) -> str:
+    async def execute(
+        self, input_text: str, multimodal_paths: Optional[dict] = None
+    ) -> str:
         """Execute the flow with given input"""

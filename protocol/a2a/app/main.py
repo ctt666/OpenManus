@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import logging
 from typing import Optional
 
 import httpx
@@ -10,6 +9,7 @@ from a2a.server.tasks import InMemoryPushNotifier, InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from dotenv import load_dotenv
 
+from app.logger import logger
 from app.tool.browser_use_tool import _BROWSER_DESCRIPTION
 from app.tool.str_replace_editor import _STR_REPLACE_EDITOR_DESCRIPTION
 from app.tool.terminate import _TERMINATE_DESCRIPTION
@@ -17,10 +17,9 @@ from app.tool.terminate import _TERMINATE_DESCRIPTION
 from .agent import A2AManus
 from .agent_executor import ManusExecutor
 
-
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logger.info)
 logger = logging.getLogger(__name__)
 
 

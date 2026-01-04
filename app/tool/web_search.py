@@ -362,7 +362,7 @@ class WebSearch(BaseTool):
         preferred = (
             getattr(config.search_config, "engine", "google").lower()
             if config.search_config
-            else "google"
+            else "baidu"
         )
         fallbacks = (
             [engine.lower() for engine in config.search_config.fallback_engines]

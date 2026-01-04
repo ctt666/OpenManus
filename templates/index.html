@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport"
+    content="width=device-width,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no" />
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon" />
+  <title>Open Manus</title>
+  <link href="static/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://gcore.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet" />
+  <script src="static/color-modes.js"></script>
+  <link href="static/style.css?v=20250819-1" rel="stylesheet" />
+  <link href="static/flow-display.css" rel="stylesheet" />
+  <link href="static/manus-main.css" rel="stylesheet" />
+  <style>
+    .bi {
+      vertical-align: -0.125em;
+      fill: currentColor;
+    }
+
+    .btn-bd-primary {
+      --bd-violet-bg: #712cf9;
+      --bd-violet-rgb: 112.520718, 44.062154, 249.437846;
+      --bs-btn-font-weight: 600;
+      --bs-btn-color: var(--bs-white);
+      --bs-btn-bg: var(--bd-violet-bg);
+      --bs-btn-border-color: var(--bd-violet-bg);
+      --bs-btn-hover-color: var(--bs-white);
+      --bs-btn-hover-bg: #6528e0;
+      --bs-btn-hover-border-color: #6528e0;
+      --bs-btn-focus-shadow-rgb: var(--bd-violet-rgb);
+      --bs-btn-active-color: var(--bs-btn-hover-color);
+      --bs-btn-active-bg: #5a23c8;
+      --bs-btn-active-border-color: #5a23c8;
+    }
+
+    .bd-mode-toggle {
+      z-index: 1500;
+    }
+
+    .bd-mode-toggle .bi {
+      width: 1em;
+      height: 1em;
+    }
+
+    .bd-mode-toggle .dropdown-menu .active .bi {
+      display: block !important;
+    }
+
+    @media (max-width: 500px) {
+      #bd-theme .theme-icon-active {
+        transform: scale(1.5);
+      }
+    }
+
+    .copy-btn {
+      display: none;
+      /* Ensure initial state is hidden */
+      position: absolute;
+      top: calc(100% - 30px);
+      right: 0;
+      z-index: 2000;
+      /* High z-index to appear above other elements */
+      background: rgba(0, 0, 0, 0.5);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 30px;
+      height: 30px;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .message-content:hover .copy-btn {
+      display: flex;
+      /* Show on hover */
+    }
+
+    .copy-toast {
+      position: absolute;
+      top: calc(100% + 5px);
+      z-index: 1000;
+      min-width: 240px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="dropdown position-fixed bottom-0 end-0 mb-3 me-3 bd-mode-toggle">
+    <button class="btn btn-bd-primary py-2 dropdown-toggle d-flex align-items-center" id="bd-theme" type="button"
+      aria-expanded="false" data-bs-toggle="dropdown" aria-label="Toggle theme (light)">
+      <svg class="bi my-1 theme-icon-active" aria-hidden="true">
+        <use href="#circle-half"></use>
+      </svg>
+      <span class="visually-hidden" id="bd-theme-text">Toggle theme</span>
+    </button>
+    <ul class="dropdown-menu dropdown-menu-end shadow" aria-labelledby="bd-theme-text">
+      <li>
+        <button type="button" class="dropdown-item d-flex align-items-center" data-bs-theme-value="light"
+          aria-pressed="false">
+          <svg class="bi me-2 opacity-50" aria-hidden="true">
+            <use href="#sun-fill"></use>
+          </svg>
+          Light
+          <svg class="bi ms-auto d-none" aria-hidden="true">
+            <use href="#check2"></use>
+          </svg>
+        </button>
+      </li>
+      <li>
+        <button type="button" class="dropdown-item d-flex align-items-center" data-bs-theme-value="dark"
+          aria-pressed="false">
+          <svg class="bi me-2 opacity-50" aria-hidden="true">
+            <use href="#moon-stars-fill"></use>
+          </svg>
+          Dark
+          <svg class="bi ms-auto d-none" aria-hidden="true">
+            <use href="#check2"></use>
+          </svg>
+        </button>
+      </li>
+    </ul>
+  </div>
+  <svg xmlns="http://www.w3.org/2000/svg" class="d-none">
+    <symbol id="check2" viewBox="0 0 16 16">
+      <path
+        d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z">
+      </path>
+    </symbol>
+    <symbol id="circle-half" viewBox="0 0 16 16">
+      <path d="M8 15A7 7 0 1 0 8 1v14zm0 1A8 8 0 1 1 8 0a8 8 0 0 1 0 16z"></path>
+    </symbol>
+    <symbol id="moon-stars-fill" viewBox="0 0 16 16">
+      <path
+        d="M6 .278a.768.768 0 0 1 .08.858 7.208 7.208 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277.527 0 1.04-.055 1.533-.16a.787.787 0 0 1 .81.316.733.733 0 0 1-.031.893A8.349 8.349 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.752.752 0 0 1 6 .278z">
+      </path>
+      <path
+        d="M10.794 3.148a.217.217 0 0 1 .412 0l.387 1.162c.173.518.579.924 1.097 1.097l1.162.387a.217.217 0 0 1 0 .412l-1.162.387a1.734 1.734 0 0 0-1.097 1.097l-.387 1.162a.217.217 0 0 1-.412 0l-.387-1.162A1.734 1.734 0 0 0 9.31 6.593l-1.162-.387a.217.217 0 0 1 0-.412l1.162-.387a1.734 1.734 0 0 0 1.097-1.097l.387-1.162zM13.863.099a.145.145 0 0 1 .274 0l.258.774c.115.346.386.617.732.732l.774.258a.145.145 0 0 1 0 .274l-.774.258a1.156 1.156 0 0 0-.732.732l-.258.774a.145.145 0 0 1-.274 0l-.258-.774a1.156 1.156 0 0 0-.732-.732l-.774-.258a.145.145 0 0 1 0-.274l.774-.258c.346-.115.617-.386.732-.732L13.863.1z">
+      </path>
+    </symbol>
+    <symbol id="sun-fill" viewBox="0 0 16 16">
+      <path
+        d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0zm0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13zm8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5zM3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8zm10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0zm-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0zm9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707zM4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708z">
+      </path>
+    </symbol>
+  </svg>
+  <!-- 主页面容器 -->
+  <div id="mainPage">
+    <!-- 现代Manus主界面 - 左右分栏布局 -->
+    <div class="manus-main-container">
+      <!-- 左侧导航栏 (4/5宽度) -->
+      <div class="left-sidebar">
+        <!-- 顶部控制区域 -->
+        <div class="sidebar-header">
+          <button class="sidebar-control-btn" id="sidebarToggle" title="取消停靠" onclick="toggleSidebarDirect()">
+            <i class="bi bi-layout-sidebar"></i>
+          </button>
+          <button class="sidebar-control-btn" title="搜索">
+            <i class="bi bi-search"></i>
+          </button>
+        </div>
+
+        <!-- 新建任务按钮 -->
+        <div class="sidebar-new-task">
+          <button class="new-task-btn" id="newTaskBtn">
+            <i class="bi bi-plus"></i>
+            新建任务
+            <span class="shortcut">Ctrl K</span>
+          </button>
+        </div>
+
+        <!-- 历史对话列表 -->
+        <div class="sidebar-history">
+          <div class="history-section">
+            <h3 class="history-title">历史对话</h3>
+            <div id="historyList" class="history-list">
+              <!-- 历史对话项目将通过JavaScript动态加载 -->
+              <div class="history-loading">
+                <i class="bi bi-arrow-clockwise spinning"></i>
+                <p>加载中...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右侧交互页面 (1/5宽度，但内容居中占2/3) -->
+      <div class="right-content">
+        <!-- 顶部导航栏 -->
+        <nav class="navbar navbar-expand-lg navbar-transparent">
+          <div class="navbar-brand">
+            <img src="/assets/logo.jpg" alt="OpenManus" class="navbar-logo">
+            <span class="brand-text">OpenManus</span>
+          </div>
+          <div class="navbar-nav ms-auto">
+            <button class="nav-btn" title="通知">
+              <i class="bi bi-bell"></i>
+              <span class="notification-dot"></span>
+            </button>
+            <button class="nav-btn" title="应用">
+              <i class="bi bi-phone"></i>
+              <span class="nav-text">App</span>
+            </button>
+            <button class="nav-btn" title="积分">
+              <i class="bi bi-star"></i>
+              <span class="nav-text">7,639</span>
+            </button>
+            <div class="profile-avatar">
+              <span class="avatar-text">t</span>
+              <span class="status-dot"></span>
+            </div>
+          </div>
+        </nav>
+
+        <!-- 主要内容区域 -->
+        <div class="main-content-area animate-home-chat-show">
+          <!-- 问候区域 -->
+          <div class="greeting-section">
+            <h1 class="greeting-title">
+              你好，tingting chen<br>
+              <span class="greeting-subtitle">我能为你做什么？</span>
+            </h1>
+          </div>
+
+          <!-- 聊天输入区域 -->
+          <div class="chat-input-section">
+            <!-- 完整的聊天框容器 -->
+            <div class="chat-box-container">
+              <!-- 主输入框 -->
+              <div class="main-input-area">
+                <textarea class="chat-textarea" id="mainTextarea" placeholder="分配一个任务或提问任何问题" rows="2"></textarea>
+              </div>
+
+              <!-- 输入控制按钮 -->
+              <div class="input-controls">
+                <div class="control-buttons-left">
+                  <button class="control-btn upload-btn" data-tooltip="上传文件及更多">
+                    <i class="bi bi-plus"></i>
+                  </button>
+                  <div class="mode-buttons-container">
+                    <ul class="mode-buttons-list">
+                      <li class="mode-button-item">
+                        <button type="button" class="mode-btn active" data-mode="adaptive"
+                          data-bubble-text="智能适配即时答案和 Agent 模式">
+                          <div class="mode-btn-content">
+                            <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" width="16"
+                              height="16" color="var(--icon-secondary)" class="mode-icon">
+                              <g clip-path="url(#e6892072d0f08b69f567f6a075d5191f0)">
+                                <path
+                                  d="M7.9987 8.66927C8.36689 8.66927 8.66536 8.37079 8.66536 8.0026C8.66536 7.63441 8.36689 7.33594 7.9987 7.33594C7.63051 7.33594 7.33203 7.63441 7.33203 8.0026C7.33203 8.37079 7.63051 8.66927 7.9987 8.66927Z"
+                                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                                  stroke-linejoin="round"></path>
+                                <path
+                                  d="M10.4679 5.5321C7.43972 2.51725 3.8846 1.16991 2.53059 2.53059C1.16991 3.8846 2.51725 7.43972 5.5321 10.4679"
+                                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                                  stroke-linejoin="round"></path>
+                                <path
+                                  d="M13.729 5.5321C14.1482 4.24274 14.0955 3.15364 13.4694 2.53059C12.1154 1.16991 8.56028 2.51725 5.5321 5.5321C2.51725 8.56028 1.16991 12.1154 2.53059 13.4694C3.34907 14.2919 4.97182 14.1249 6.79629 13.1982"
+                                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                                  stroke-linejoin="round"></path>
+                                <path
+                                  d="M13.9043 13.6582L13.5625 12.7598H10.6523L10.3105 13.6777C10.1771 14.0358 10.0632 14.2783 9.96875 14.4053C9.87435 14.529 9.71973 14.5908 9.50488 14.5908C9.32259 14.5908 9.16146 14.5241 9.02148 14.3906C8.88151 14.2572 8.81152 14.1058 8.81152 13.9365C8.81152 13.8389 8.8278 13.738 8.86035 13.6338C8.8929 13.5296 8.94661 13.3848 9.02148 13.1992L10.8525 8.55078C10.9046 8.41732 10.9665 8.25781 11.0381 8.07227C11.113 7.88346 11.1911 7.72721 11.2725 7.60352C11.3571 7.47982 11.4661 7.38053 11.5996 7.30566C11.7363 7.22754 11.904 7.18848 12.1025 7.18848C12.3044 7.18848 12.472 7.22754 12.6055 7.30566C12.7422 7.38053 12.8512 7.47819 12.9326 7.59863C13.0173 7.71908 13.0872 7.84928 13.1426 7.98926C13.2012 8.12598 13.2744 8.3099 13.3623 8.54102L15.2324 13.1602C15.3789 13.5117 15.4521 13.7673 15.4521 13.9268C15.4521 14.0928 15.3822 14.2458 15.2422 14.3857C15.1055 14.5225 14.9395 14.5908 14.7441 14.5908C14.6302 14.5908 14.5326 14.5697 14.4512 14.5273C14.3698 14.4883 14.3014 14.4346 14.2461 14.3662C14.1908 14.2946 14.1305 14.1872 14.0654 14.0439C14.0036 13.8975 13.9499 13.7689 13.9043 13.6582ZM11.0332 11.6709H13.1719L12.0928 8.7168L11.0332 11.6709Z"
+                                  fill="currentColor"></path>
+                              </g>
+                              <defs>
+                                <clipPath id="e6892072d0f08b69f567f6a075d5191f0">
+                                  <rect width="16" height="16" fill="white"></rect>
+                                </clipPath>
+                              </defs>
+                            </svg>
+                          </div>
+                        </button>
+                        <div class="mode-btn-bg"></div>
+                      </li>
+                      <li class="mode-button-item">
+                        <button type="button" class="mode-btn" data-mode="agent" data-bubble-text="处理复杂任务并自主交付结果">
+                          <div class="mode-btn-content">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" width="16"
+                              height="16" color="var(--icon-secondary)" class="mode-icon">
+                              <path
+                                d="M7.9987 8.66536C8.36689 8.66536 8.66536 8.36689 8.66536 7.9987C8.66536 7.63051 8.36689 7.33203 7.9987 7.33203C7.63051 7.33203 7.33203 7.63051 7.33203 7.9987C7.33203 8.36689 7.63051 8.66536 7.9987 8.66536Z"
+                                stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                              </path>
+                              <path
+                                d="M13.4694 13.4694C14.8301 12.1154 13.4827 8.56028 10.4679 5.5321C7.43972 2.51725 3.8846 1.16991 2.53059 2.53059C1.16991 3.8846 2.51725 7.43972 5.5321 10.4679C8.56028 13.4827 12.1154 14.8301 13.4694 13.4694Z"
+                                stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                              </path>
+                              <path
+                                d="M10.4679 10.4679C13.4827 7.43972 14.8301 3.8846 13.4694 2.53059C12.1154 1.16991 8.56028 2.51725 5.5321 5.5321C2.51725 8.56028 1.16991 12.1154 2.53059 13.4694C3.8846 14.8301 7.43972 13.4827 10.4679 10.4679Z"
+                                stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                              </path>
+                            </svg>
+                          </div>
+                        </button>
+                        <div class="mode-btn-bg"></div>
+                      </li>
+                      <li class="mode-button-item">
+                        <button type="button" class="mode-btn" data-mode="chat" data-bubble-text="回答日常问题或在开始任务前进行对话">
+                          <div class="mode-btn-content">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" width="16"
+                              height="16" color="var(--icon-secondary)" class="mode-icon">
+                              <path
+                                d="M14 10C14 10.3536 13.8595 10.6928 13.6095 10.9428C13.3594 11.1929 13.0203 11.3333 12.6667 11.3333H4.66667L2 14V3.33333C2 2.97971 2.14048 2.64057 2.39052 2.39052C2.64057 2.14048 2.97971 2 3.33333 2H12.6667C13.0203 2 13.3594 2.14048 13.6095 2.39052C13.8595 2.64057 14 2.97971 14 3.33333V10Z"
+                                stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                              </path>
+                              <path d="M5.33337 6.66602H5.34004" stroke="currentColor" stroke-width="1.6"
+                                stroke-linecap="round" stroke-linejoin="round"></path>
+                              <path d="M8 6.66602H8.00667" stroke="currentColor" stroke-width="1.6"
+                                stroke-linecap="round" stroke-linejoin="round"></path>
+                              <path d="M10.6666 6.66602H10.6733" stroke="currentColor" stroke-width="1.6"
+                                stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                          </div>
+                        </button>
+                        <div class="mode-btn-bg"></div>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+                <div class="control-buttons-right">
+                  <div class="quality-selector">
+                    <span class="quality-text">质量</span>
+                    <i class="bi bi-chevron-right"></i>
+                  </div>
+                  <button class="control-btn voice-btn">
+                    <i class="bi bi-mic"></i>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 已选文件列表 -->
+              <div id="selectedFilesContainer" class="selected-files-container" style="display: none;">
+                <div class="selected-files-header">
+                  <span class="selected-files-title">已选文件 (<span id="fileCount">0</span>/3)</span>
+                </div>
+                <div id="selectedFilesList" class="selected-files-list">
+                  <!-- 文件列表项将通过JavaScript动态添加 -->
+                </div>
+              </div>
+            </div>
+
+            <!-- 功能按钮区域 -->
+            <div class="feature-buttons">
+              <button class="feature-btn">
+                <div class="w-4 h-4 relative overflow-hidden">
+                  <i class="bi bi-image"></i>
+                </div>
+                <div class="flex justify-start items-center gap-1">
+                  <span>图片</span>
+                </div>
+              </button>
+              <button class="feature-btn">
+                <div class="w-4 h-4 relative overflow-hidden">
+                  <i class="bi bi-easel"></i>
+                </div>
+                <div class="flex justify-start items-center gap-1">
+                  <span>幻灯片</span>
+                </div>
+              </button>
+              <button class="feature-btn">
+                <div class="w-4 h-4 relative overflow-hidden">
+                  <i class="bi bi-globe"></i>
+                </div>
+                <div class="flex justify-start items-center gap-1">
+                  <span>网页</span>
+                </div>
+              </button>
+              <button class="feature-btn">
+                <div class="w-4 h-4 relative overflow-hidden">
+                  <i class="bi bi-table"></i>
+                </div>
+                <div class="flex justify-start items-center gap-1">
+                  <span>电子表格</span>
+                </div>
+              </button>
+              <button class="feature-btn">
+                <div class="w-4 h-4 relative overflow-hidden">
+                  <i class="bi bi-bar-chart"></i>
+                </div>
+                <div class="flex justify-start items-center gap-1">
+                  <span>可视化</span>
+                </div>
+              </button>
+              <button class="feature-btn">
+                <span>更多</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 移除Manus Plus权益按钮 -->
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+  </div>
+  </div>
+
+  <div class="modal fade" id="historyModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">History Chats</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <ul class="list-group" id="historyList">
+            <!-- History Chats -->
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="position-fixed top-50 start-50 translate-middle" style="z-index: 1100">
+    <div id="errorToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="toast-header bg-danger text-white">
+        <strong class="me-auto">Open Manus</strong>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
+      </div>
+      <div class="toast-body"></div>
+    </div>
+  </div>
+  </div> <!-- 结束主页面容器 -->
+
+  <!-- 任务执行页面容器 (隐藏) -->
+  <div id="taskPage" style="display: none;">
+    <!-- 任务页面内容将由JavaScript动态生成 -->
+  </div>
+
+  <!-- 隐藏的文件选择input -->
+  <input type="file" id="fileInput" style="display: none;" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.mp3,.wav,.m4a,.ogg,.flac,.txt,.md,.json,.csv,.py,.js,.ts,.html,.css">
+
+  <script src="static/marked.min.js"></script>
+  <script src="static/bootstrap.bundle.min.js"></script>
+  <script src="static/purify.min.js"></script>
+  <script src="static/flow-display.js"></script>
+  <script src="static/manus-main.js"></script>
+  <script>
+    function copyMessage(element) {
+      const messageText = element
+        .closest(".message-content")
+        .querySelector(".user-prompt")
+        .textContent.trim();
+      // Create toast
+      const toast = document.createElement("div");
+      toast.className = "toast copy-toast";
+      toast.setAttribute("role", "alert");
+      toast.setAttribute("aria-live", "assertive");
+      toast.setAttribute("aria-atomic", "true");
+      toast.setAttribute("data-bs-autohide", "true");
+      toast.setAttribute("data-bs-delay", "3000");
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(messageText).then(() => {
+          toast.innerHTML = `
+                  <div class="toast-body">
+                    <i class="bi bi-check-circle text-success"></i> Message copied to clipboard!
+                  </div>
+              `;
+          element.closest(".message-content").appendChild(toast);
+
+          // Show toast
+          const bsToast = new bootstrap.Toast(toast);
+          bsToast.show();
+
+          // Remove toast after it hides
+          toast.addEventListener("hidden.bs.toast", () => {
+            toast.remove();
+          });
+        });
+      } else {
+        // Fallback when Clipboard API is not available
+        toast.innerHTML = `
+            <div class="toast-body">
+                <i class="bi bi-exclamation-circle text-danger"></i> Copy not supported. Please copy manually.
+            </div>
+          `;
+        element.closest(".message-content").appendChild(toast);
+        const bsToast = new bootstrap.Toast(toast);
+        bsToast.show();
+        toast.addEventListener("hidden.bs.toast", () => {
+          toast.remove();
+        });
+      }
+    }
+  </script>
+</body>
+
+</html>

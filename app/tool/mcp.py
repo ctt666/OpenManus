@@ -1,3 +1,4 @@
+import time
 from contextlib import AsyncExitStack
 from typing import Dict, List, Optional
 
@@ -69,7 +70,11 @@ class MCPClients(ToolCollection):
         await self._initialize_and_list_tools(server_id)
 
     async def connect_stdio(
-        self, command: str, args: List[str], server_id: str = ""
+        self,
+        command: str,
+        args: List[str],
+        server_id: str = "",
+        env: Dict[str, str] = {},
     ) -> None:
         """Connect to an MCP server using stdio transport."""
         if not command:
@@ -84,7 +89,7 @@ class MCPClients(ToolCollection):
         exit_stack = AsyncExitStack()
         self.exit_stacks[server_id] = exit_stack
 
-        server_params = StdioServerParameters(command=command, args=args)
+        server_params = StdioServerParameters(command=command, args=args, env=env)
         stdio_transport = await exit_stack.enter_async_context(
             stdio_client(server_params)
         )
@@ -154,8 +159,9 @@ class MCPClients(ToolCollection):
 
     async def disconnect(self, server_id: str = "") -> None:
         """Disconnect from a specific MCP server or all servers if no server_id provided."""
+        keys = self.sessions.keys()
         if server_id:
-            if server_id in self.sessions:
+            if server_id in keys:
                 try:
                     exit_stack = self.exit_stacks.get(server_id)
 
@@ -169,7 +175,11 @@ class MCPClients(ToolCollection):
                                     f"Cancel scope error during disconnect from {server_id}, continuing with cleanup: {e}"
                                 )
                             else:
-                                raise
+                                logger.warning(f"close session error: {e}")
+                        except Exception as e:
+                            logger.warning(
+                                f"Unexpected error during exit stack cleanup for {server_id}: {e}"
+                            )
 
                     # Clean up references
                     self.sessions.pop(server_id, None)
@@ -187,8 +197,12 @@ class MCPClients(ToolCollection):
                     logger.error(f"Error disconnecting from server {server_id}: {e}")
         else:
             # Disconnect from all servers in a deterministic order
-            for sid in sorted(list(self.sessions.keys())):
-                await self.disconnect(sid)
+            session_list = list(reversed(self.sessions.keys()))
+            for sid in session_list:
+                try:
+                    await self.disconnect(sid)
+                except Exception as e:
+                    logger.warning(f"Error disconnecting from server {sid}: {e}")
             self.tool_map = {}
             self.tools = tuple()
             logger.info("Disconnected from all MCP servers")

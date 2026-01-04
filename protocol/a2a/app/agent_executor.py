@@ -1,8 +1,8 @@
-import logging
 from typing import Awaitable, Callable
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
-from a2a.server.events import EventQueue
+from a2a.server.events import Event, EventQueue
+from a2a.server.tasks import TaskUpdater
 from a2a.types import (
     InvalidParamsError,
     Part,
@@ -13,10 +13,11 @@ from a2a.types import (
 from a2a.utils import completed_task, new_artifact
 from a2a.utils.errors import ServerError
 
+from app.logger import logger
+
 from .agent import A2AManus
 
-
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logger.info)
 logger = logging.getLogger(__name__)
 
 

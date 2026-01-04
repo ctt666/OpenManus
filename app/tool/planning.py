@@ -1,9 +1,8 @@
-# tool/planning.py
+# tool/planning_agent.py
 from typing import Dict, List, Literal, Optional
 
 from app.exceptions import ToolError
 from app.tool.base import BaseTool, ToolResult
-
 
 _PLANNING_TOOL_DESCRIPTION = """
 A planning tool that allows the agent to create and manage plans for solving complex tasks.
@@ -29,37 +28,56 @@ class PlanningTool(BaseTool):
                     "update",
                     "list",
                     "get",
+                    "get_step",
                     "set_active",
                     "mark_step",
                     "delete",
                 ],
                 "type": "string",
             },
-            "plan_id": {
-                "description": "Unique identifier for the plan. Required for create, update, set_active, and delete commands. Optional for get and mark_step (uses active plan if not specified).",
-                "type": "string",
-            },
+            # "plan_id": {
+            #     "description": "Unique identifier for the plan. Required for create, update, set_active, and delete commands. Optional for get and mark_step (uses active plan if not specified).",
+            #     "type": "string",
+            # },
             "title": {
                 "description": "Title for the plan. Required for create command, optional for update command.",
                 "type": "string",
             },
+            "request": {
+                "description": "Original user request for the plan. Required for create command",
+                "type": "string",
+            },
+            # "step_index": {
+            #     "description": "Index of the step to update (0-based). Required for mark_step command.",
+            #     "type": "integer",
+            # },
+            # "step_status": {
+            #     "description": "Status to set for a step. Used with mark_step command.",
+            #     "enum": ["not_started", "in_progress", "completed", "blocked"],
+            #     "type": "string",
+            # },
+            # "step_notes": {
+            #     "description": "Additional notes for a step. Optional for mark_step command.",
+            #     "type": "string",
+            # },
             "steps": {
-                "description": "List of plan steps. Required for create command, optional for update command.",
+                "description": "List of actionable plan steps. Each step should be a clear, independent action that can be executed. Required for create command, optional for update command. Steps should be ordered logically and specify the executor when applicable (e.g., 'Gather relevant materials [Flow]').",
                 "type": "array",
-                "items": {"type": "string"},
-            },
-            "step_index": {
-                "description": "Index of the step to update (0-based). Required for mark_step command.",
-                "type": "integer",
-            },
-            "step_status": {
-                "description": "Status to set for a step. Used with mark_step command.",
-                "enum": ["not_started", "in_progress", "completed", "blocked"],
-                "type": "string",
-            },
-            "step_notes": {
-                "description": "Additional notes for a step. Optional for mark_step command.",
-                "type": "string",
+                "items": {
+                    "type": "string",
+                    "minLength": 10,
+                    "maxLength": 500,
+                    "pattern": "^[^\\n\\r]+$",  # 不允许换行符
+                    "description": "A single actionable step in the plan. Should be clear, specific, and executable.",
+                },
+                "minItems": 1,
+                "maxItems": 20,
+                "uniqueItems": True,  # 确保步骤不重复
+                "examples": [
+                    "Research and gather information about the topic [Flow]",
+                    "Analyze the collected data and identify key insights [Flow]",
+                    "Create a comprehensive report based on findings [Flow]",
+                ],
             },
         },
         "required": ["command"],
@@ -73,10 +91,18 @@ class PlanningTool(BaseTool):
         self,
         *,
         command: Literal[
-            "create", "update", "list", "get", "set_active", "mark_step", "delete"
+            "create",
+            "update",
+            "list",
+            "get",
+            "get_step",
+            "set_active",
+            "mark_step",
+            "delete",
         ],
         plan_id: Optional[str] = None,
         title: Optional[str] = None,
+        request: Optional[str] = None,
         steps: Optional[List[str]] = None,
         step_index: Optional[int] = None,
         step_status: Optional[
@@ -99,13 +125,15 @@ class PlanningTool(BaseTool):
         """
 
         if command == "create":
-            return self._create_plan(plan_id, title, steps)
+            return self._create_plan(plan_id, request, title, steps)
         elif command == "update":
             return self._update_plan(plan_id, title, steps)
         elif command == "list":
             return self._list_plans()
         elif command == "get":
             return self._get_plan(plan_id)
+        elif command == "get_step":
+            return self._get_plan_step(plan_id)
         elif command == "set_active":
             return self._set_active_plan(plan_id)
         elif command == "mark_step":
@@ -118,7 +146,11 @@ class PlanningTool(BaseTool):
             )
 
     def _create_plan(
-        self, plan_id: Optional[str], title: Optional[str], steps: Optional[List[str]]
+        self,
+        plan_id: Optional[str],
+        request: Optional[str],
+        title: Optional[str],
+        steps: Optional[List[str]],
     ) -> ToolResult:
         """Create a new plan with the given ID, title, and steps."""
         if not plan_id:
@@ -128,6 +160,9 @@ class PlanningTool(BaseTool):
             raise ToolError(
                 f"A plan with ID '{plan_id}' already exists. Use 'update' to modify existing plans."
             )
+
+        if not request:
+            raise ToolError("Parameter 'request' is required for command: create")
 
         if not title:
             raise ToolError("Parameter `title` is required for command: create")
@@ -145,17 +180,17 @@ class PlanningTool(BaseTool):
         plan = {
             "plan_id": plan_id,
             "title": title,
+            "request": request,
             "steps": steps,
             "step_statuses": ["not_started"] * len(steps),
             "step_notes": [""] * len(steps),
+            "status": "not_started",
         }
 
         self.plans[plan_id] = plan
         self._current_plan_id = plan_id  # Set as active plan
 
-        return ToolResult(
-            output=f"Plan created successfully with ID: {plan_id}\n\n{self._format_plan(plan)}"
-        )
+        return ToolResult(output=plan)
 
     def _update_plan(
         self, plan_id: Optional[str], title: Optional[str], steps: Optional[List[str]]
@@ -202,9 +237,7 @@ class PlanningTool(BaseTool):
             plan["step_statuses"] = new_statuses
             plan["step_notes"] = new_notes
 
-        return ToolResult(
-            output=f"Plan updated successfully: {plan_id}\n\n{self._format_plan(plan)}"
-        )
+        return ToolResult(output=f"Plan updated successfully: {plan_id}")
 
     def _list_plans(self) -> ToolResult:
         """List all available plans."""
@@ -225,6 +258,29 @@ class PlanningTool(BaseTool):
 
         return ToolResult(output=output)
 
+    def _get_plan_step(self, plan_id) -> ToolResult:
+        """Get details of a specific step of the plan."""
+        if not plan_id:
+            # If no plan_id is provided, use the current active plan
+            if not self._current_plan_id:
+                raise ToolError(
+                    "No active plan. Please specify a plan_id or set an active plan."
+                )
+            plan_id = self._current_plan_id
+
+        if plan_id not in self.plans:
+            raise ToolError(f"No plan found with ID: {plan_id}")
+
+        plan = self.plans[plan_id]
+        output = ""
+        for _, (step, status, _) in enumerate(
+            zip(plan["steps"], plan["step_statuses"], plan["step_notes"])
+        ):
+            if status == "not_started" or status == "in_progress":
+                output = step
+                break
+        return ToolResult(output=output)
+
     def _get_plan(self, plan_id: Optional[str]) -> ToolResult:
         """Get details of a specific plan."""
         if not plan_id:
@@ -239,7 +295,7 @@ class PlanningTool(BaseTool):
             raise ToolError(f"No plan found with ID: {plan_id}")
 
         plan = self.plans[plan_id]
-        return ToolResult(output=self._format_plan(plan))
+        return ToolResult(output=plan)
 
     def _set_active_plan(self, plan_id: Optional[str]) -> ToolResult:
         """Set a plan as the active plan."""
@@ -250,9 +306,7 @@ class PlanningTool(BaseTool):
             raise ToolError(f"No plan found with ID: {plan_id}")
 
         self._current_plan_id = plan_id
-        return ToolResult(
-            output=f"Plan '{plan_id}' is now the active plan.\n\n{self._format_plan(self.plans[plan_id])}"
-        )
+        return ToolResult(output=f"Plan '{plan_id}' is now the active plan.")
 
     def _mark_step(
         self,
@@ -299,9 +353,10 @@ class PlanningTool(BaseTool):
         if step_notes:
             plan["step_notes"][step_index] = step_notes
 
-        return ToolResult(
-            output=f"Step {step_index} updated in plan '{plan_id}'.\n\n{self._format_plan(plan)}"
-        )
+        if step_index == len(plan["steps"]) - 1:
+            plan["status"] = "completed"
+
+        return ToolResult(output=f"Step {step_index} updated in plan '{plan_id}'.")
 
     def _delete_plan(self, plan_id: Optional[str]) -> ToolResult:
         """Delete a plan."""
@@ -318,46 +373,3 @@ class PlanningTool(BaseTool):
             self._current_plan_id = None
 
         return ToolResult(output=f"Plan '{plan_id}' has been deleted.")
-
-    def _format_plan(self, plan: Dict) -> str:
-        """Format a plan for display."""
-        output = f"Plan: {plan['title']} (ID: {plan['plan_id']})\n"
-        output += "=" * len(output) + "\n\n"
-
-        # Calculate progress statistics
-        total_steps = len(plan["steps"])
-        completed = sum(1 for status in plan["step_statuses"] if status == "completed")
-        in_progress = sum(
-            1 for status in plan["step_statuses"] if status == "in_progress"
-        )
-        blocked = sum(1 for status in plan["step_statuses"] if status == "blocked")
-        not_started = sum(
-            1 for status in plan["step_statuses"] if status == "not_started"
-        )
-
-        output += f"Progress: {completed}/{total_steps} steps completed "
-        if total_steps > 0:
-            percentage = (completed / total_steps) * 100
-            output += f"({percentage:.1f}%)\n"
-        else:
-            output += "(0%)\n"
-
-        output += f"Status: {completed} completed, {in_progress} in progress, {blocked} blocked, {not_started} not started\n\n"
-        output += "Steps:\n"
-
-        # Add each step with its status and notes
-        for i, (step, status, notes) in enumerate(
-            zip(plan["steps"], plan["step_statuses"], plan["step_notes"])
-        ):
-            status_symbol = {
-                "not_started": "[ ]",
-                "in_progress": "[→]",
-                "completed": "[✓]",
-                "blocked": "[!]",
-            }.get(status, "[ ]")
-
-            output += f"{i}. {status_symbol} {step}\n"
-            if notes:
-                output += f"   Notes: {notes}\n"
-
-        return output

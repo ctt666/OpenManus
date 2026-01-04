@@ -55,11 +55,12 @@ class Message(BaseModel):
     """Represents a chat message in the conversation"""
 
     role: ROLE_TYPE = Field(...)  # type: ignore
-    content: Optional[str] = Field(default=None)
+    content: Union[str, list] = Field(default=None)
     tool_calls: Optional[List[ToolCall]] = Field(default=None)
     name: Optional[str] = Field(default=None)
     tool_call_id: Optional[str] = Field(default=None)
     base64_image: Optional[str] = Field(default=None)
+    arguments: Optional[str] = Field(default=None)
 
     def __add__(self, other) -> List["Message"]:
         """支持 Message + list 或 Message + Message 的操作"""
@@ -98,9 +99,23 @@ class Message(BaseModel):
 
     @classmethod
     def user_message(
-        cls, content: str, base64_image: Optional[str] = None
+        cls,
+        content: str,
+        base64_image: Optional[str] = None,
+        multimodal_paths: Optional[dict] = None,
     ) -> "Message":
         """Create a user message"""
+        if multimodal_paths and "image" in multimodal_paths:
+            contents = []
+            for image_path in multimodal_paths["image"]:
+                contents.append(
+                    {"type": "image_url", "image_url": {"url": str(image_path)}}
+                )
+            # 若还有文字内容，追加
+            if content:
+                contents.append({"type": "text", "text": content})
+            return cls(role=Role.USER, content=contents, base64_image=base64_image)
+
         return cls(role=Role.USER, content=content, base64_image=base64_image)
 
     @classmethod
@@ -117,7 +132,12 @@ class Message(BaseModel):
 
     @classmethod
     def tool_message(
-        cls, content: str, name, tool_call_id: str, base64_image: Optional[str] = None
+        cls,
+        content: str,
+        name,
+        tool_call_id: str,
+        arguments: Optional[str] = None,
+        base64_image: Optional[str] = None,
     ) -> "Message":
         """Create a tool message"""
         return cls(
@@ -126,6 +146,7 @@ class Message(BaseModel):
             name=name,
             tool_call_id=tool_call_id,
             base64_image=base64_image,
+            arguments=arguments,
         )
 
     @classmethod
@@ -175,8 +196,9 @@ class Memory(BaseModel):
             self.messages = self.messages[-self.max_messages :]
 
     def clear(self) -> None:
-        """Clear all messages"""
-        self.messages.clear()
+        """清空所有消息"""
+        print("清空所有消息")
+        self.messages = []
 
     def get_recent_messages(self, n: int) -> List[Message]:
         """Get n most recent messages"""

@@ -1,0 +1,46 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "D:\\apps\\nodejs\\npx.cmd",
+      "args": [
+        "@playwright/mcp@latest"
+      ]
+    },
+    "osm-mcp-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "osm-mcp-server"
+      ]
+    },
+    "weather-mcp": {
+      "type": "stdio",
+      "command": "D:\\apps\\anaconda\\python.exe",
+      "args": [
+        "D:\\python_project\\Weather-MCP-ClaudeDesktop\\main.py"
+      ]
+    },
+    "ppt": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "office-powerpoint-mcp-server",
+        "ppt_mcp_server"
+      ],
+      "env": {}
+    },
+    "replicate-flux-mcp": {
+      "type": "stdio",
+      "command": "D:\\apps\\nodejs\\npx.cmd",
+      "args": [
+        "-y",
+        "replicate-flux-mcp"
+      ],
+      "env": {
+        "REPLICATE_API_TOKEN": "xxx"
+      }
+    }
+  }
+}
