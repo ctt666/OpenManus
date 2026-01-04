@@ -62,8 +62,3 @@ class FlowAgent(Manus):
                 data["llm"] = LLM()
 
         super().__init__(**data)
-
-    def set_prompt(self, render: dict):
-        """Set the prompt for the agent"""
-        self.next_step_prompt = NEXT_STEP_PROMPT.format(**render)
-        self.system_prompt = SYSTEM_PROMPT.format(**render)

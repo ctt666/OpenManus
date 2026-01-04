@@ -350,13 +350,6 @@ class PlanningFlow(BaseFlow):
         plan = await self._get_plan()
         # Create a prompt for the agent to execute the current step
         step_prompt = self._format_plan_step(plan)
-        executor.set_prompt(
-            {
-                "context": precede_step_result,
-                "request": step_prompt,
-                "directory": config.workspace_root / self.active_plan_id,
-            }
-        )
         logger.info(f"Step prompt: {step_prompt}, context: {precede_step_result}")
 
         # Use agent.run() to execute the step
@@ -365,11 +358,15 @@ class PlanningFlow(BaseFlow):
             executor.state = AgentState.IDLE
             if executor.support_multimodal_input:
                 results = await executor.run(
+                    request=step_prompt,
+                    context=precede_step_result,
                     multimodal_paths=multimodal_paths,
                     # stream_callback=stream_callback,
                 )
             else:
-                results = await executor.run(step_prompt)
+                results = await executor.run(
+                    request=step_prompt, context=precede_step_result
+                )
 
             # Mark the step as completed after successful execution
             # 判断是否式因为交互而暂停的

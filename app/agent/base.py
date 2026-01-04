@@ -52,11 +52,6 @@ class BaseAgent(BaseModel, ABC):
         arbitrary_types_allowed = True
         extra = "allow"  # Allow extra fields for flexibility in subclasses
 
-    @abstractmethod
-    def set_prompt(self, render: dict):
-        """Set the prompt for the agent"""
-        pass
-
     @model_validator(mode="after")
     def initialize_agent(self) -> "BaseAgent":
         """Initialize agent with default settings if not provided."""
@@ -129,6 +124,7 @@ class BaseAgent(BaseModel, ABC):
         request: Optional[str] = None,
         stream_callback=None,
         multimodal_paths: Optional[dict] = None,
+        context: Optional[str] = None,
     ) -> str:
         """
         运行代理的主要执行循环
@@ -137,6 +133,7 @@ class BaseAgent(BaseModel, ABC):
             request: 用户请求
             stream_callback: 流式回调函数，用于实时推送总结的chunk
             multimodal_paths: 多模态参数（可选），如 audio, image, text
+            context: 上下文信息，用于生成 next_step_prompt
 
         Returns:
             任务执行结果
@@ -163,7 +160,9 @@ class BaseAgent(BaseModel, ABC):
                     raise
 
                 # 思考阶段
-                should_continue, content = await self.think()
+                should_continue, content = await self.think(
+                    request=request, context=context
+                )
                 if not should_continue:
                     break
 

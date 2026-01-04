@@ -56,11 +56,6 @@ class Manus(ToolCallAgent):
     )  # server_id -> url/command
     _initialized: bool = False
 
-    def set_prompt(self, render: dict):
-        """Set the prompt for the agent"""
-        self.next_step_prompt = NEXT_STEP_PROMPT.format(**render)
-        self.system_prompt = SYSTEM_PROMPT.format(**render)
-
     # async def run(self, request: Optional[str] = None) -> str:
     #     """Run the agent with the given request.
 

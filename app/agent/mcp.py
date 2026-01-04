@@ -131,13 +131,23 @@ class MCPAgent(ToolCallAgent):
 
         return added_tools, removed_tools
 
-    async def think(self) -> bool:
-        """Process current state and decide next action."""
+    async def think(
+        self, request: Optional[str] = None, context: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Process current state and decide next action.
+
+        Args:
+            request: 用户请求
+            context: 上下文信息
+
+        Returns:
+            (should_continue, content): 是否继续执行和思考内容
+        """
         # Check MCP session and tools availability
         if not self.mcp_clients.sessions or not self.mcp_clients.tool_map:
             logger.info("MCP service is no longer available, ending interaction")
             self.state = AgentState.FINISHED
-            return False
+            return False, "MCP service is no longer available"
 
         # Refresh tools periodically
         if self.current_step % self._refresh_tools_interval == 0:
@@ -146,10 +156,10 @@ class MCPAgent(ToolCallAgent):
             if not self.mcp_clients.tool_map:
                 logger.info("MCP service has shut down, ending interaction")
                 self.state = AgentState.FINISHED
-                return False
+                return False, "MCP service has shut down"
 
         # Use the parent class's think method
-        return await super().think()
+        return await super().think(request=request, context=context)
 
     async def _handle_special_tool(self, name: str, result: Any, **kwargs) -> None:
         """Handle special tool execution and state changes"""

@@ -4,7 +4,6 @@ import os
 import re
 import threading
 import time
-import tomllib
 import uuid
 import webbrowser
 from datetime import datetime
@@ -13,6 +12,7 @@ from json import dumps
 from pathlib import Path
 from typing import Optional
 
+import tomllib
 from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
@@ -674,12 +674,6 @@ async def run_task(
             # 使用Manus Agent处理纯文本输入
             agent = await Manus.create()
             logger.info(f"✨ Task {task_id}: 使用 Manus Agent 处理文本输入")
-        agent.set_prompt(
-            {
-                "request": prompt,
-                "directory": config.workspace_root / task_id,
-            }
-        )
 
         async def on_think(thought):
             await task_manager.update_task_step(task_id, 0, thought, "think")
@@ -809,10 +803,12 @@ async def run_task(
             # logger.debug(f"📤 [DEBUG] stream_complete事件已发送到队列")
 
         # 运行 agent（传入流式回调）
+        # full_prompt 已经包含了聊天历史，作为 request 传入
         result = await agent.run(
-            full_prompt,
+            request=full_prompt,
             stream_callback=stream_summary_callback,
             multimodal_paths=classified_paths,
+            context=None,  # server.py 中暂时不传入 context
         )
 
         # 检查是否因为 ask_human 工具而暂停了执行
@@ -878,9 +874,10 @@ async def run_task(
 
                 # 继续执行 agent，从中断的地方继续（传入流式回调）
                 result = await agent.run(
-                    prompt,
+                    request=prompt,
                     stream_callback=stream_summary_callback,
                     multimodal_paths=classified_paths,
+                    context=None,  # server.py 中暂时不传入 context
                 )
             else:
                 # 如果无法提取询问内容，退出循环

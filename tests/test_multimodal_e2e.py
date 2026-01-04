@@ -56,14 +56,6 @@ class TestMultimodalTaskE2E:
                 input_text += f"{file_content}\n"
                 input_text += f"{'='*50}\n"
 
-        # 设置提示词
-        agent.set_prompt(
-            {
-                "request": input_text,
-                "directory": config.workspace_root,
-            }
-        )
-
         task_manager = TaskManager()
 
         # 定义流式回调函数 - 实时推送总结的chunk到前端
@@ -72,7 +64,9 @@ class TestMultimodalTaskE2E:
             print("chunk:", chunk)
 
         # 执行（这需要真实的LLM API）
-        result = await agent.run(stream_callback=stream_summary_callback)
+        result = await agent.run(
+            request=input_text, stream_callback=stream_summary_callback
+        )
         assert result is not None
         print("result:", result)
 
@@ -98,10 +92,9 @@ class TestMultimodalTaskE2E:
         agent = await MultimodalAgent.create()
 
         # 执行（这需要真实的LLM API）
-        agent.set_prompt(
-            {"request": "请分析这张图片", "directory": config.workspace_root}
+        result = await agent.run(
+            request="请分析这张图片", multimodal_paths=classified_paths
         )
-        result = await agent.run(multimodal_paths=classified_paths)
         assert result is not None
         print("result:", result)
 

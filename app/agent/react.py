@@ -27,16 +27,36 @@ class ReActAgent(BaseAgent, ABC):
     current_step: int = 0
 
     @abstractmethod
-    async def think(self) -> (bool, str):
-        """Process current state and decide next action"""
+    async def think(
+        self, request: Optional[str] = None, context: Optional[str] = None
+    ) -> (bool, str):
+        """Process current state and decide next action
+
+        Args:
+            request: 用户请求
+            context: 上下文信息
+
+        Returns:
+            (should_continue, content): 是否继续执行和思考内容
+        """
 
     @abstractmethod
     async def act(self) -> str:
         """Execute decided actions"""
 
-    async def step(self) -> str:
-        """Execute a single step: think and act."""
-        should_act, thought = await self.think()
+    async def step(
+        self, request: Optional[str] = None, context: Optional[str] = None
+    ) -> str:
+        """Execute a single step: think and act.
+
+        Args:
+            request: 用户请求
+            context: 上下文信息
+
+        Returns:
+            执行结果
+        """
+        should_act, thought = await self.think(request=request, context=context)
         if not should_act:
             return thought
         act_result = await self.act()

@@ -38,7 +38,7 @@ class MultimodalAgent(Manus):
     )
 
     system_prompt: str = multimodal.SYSTEM_PROMPT
-    next_step_prompt: str = ""  # 将在set_prompt中设置
+    next_step_prompt: str = multimodal.NEXT_STEP_PROMPT
 
     # 最大步数（多模态任务可能需要更多步骤）
     max_steps: int = 40
@@ -68,25 +68,6 @@ class MultimodalAgent(Manus):
             logger.info(f"🛠️ MultimodalAgent: Loaded {len(tools.tool_map)} tools")
 
         super().__init__(**data)
-
-    def set_prompt(self, variables: dict) -> None:
-        """
-        设置提示词
-
-        Args:
-            variables: 提示词变量字典，应包含:
-                - request: 任务描述
-                - directory: 工作目录
-        """
-        # 系统提示词已在类定义中设置
-        self.system_prompt = multimodal.SYSTEM_PROMPT
-
-        # 根据变量格式化下一步提示词
-        self.next_step_prompt = multimodal.NEXT_STEP_PROMPT.format(**variables)
-
-        logger.debug(
-            f"📝 MultimodalAgent prompt set: {variables.get('request', '')[:50]}..."
-        )
 
     async def summarize(
         self, request: Optional[str] = None, stream_callback=None

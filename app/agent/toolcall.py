@@ -5,6 +5,7 @@ from typing import Any, List, Optional, Union
 from pydantic import Field
 
 from app.agent.react import ReActAgent
+from app.config import config
 from app.exceptions import TokenLimitExceeded
 from app.logger import logger
 from app.prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
@@ -36,11 +37,73 @@ class ToolCallAgent(ReActAgent):
     max_observe: Optional[Union[int, bool]] = None
     multimodal_paths: Optional[dict] = None
 
-    async def think(self) -> (bool, str):
-        """Process current state and decide next actions using tools"""
-        if self.next_step_prompt:
+    def _get_directory(self) -> str:
+        """获取工作目录，可被子类覆盖
+
+        Returns:
+            工作目录路径字符串
+        """
+        return str(config.workspace_root)
+
+    def _format_prompt(
+        self, template: str, request: Optional[str] = None, context: Optional[str] = None
+    ) -> str:
+        """根据模板和参数生成最终 prompt
+
+        Args:
+            template: Prompt 模板字符串
+            request: 用户请求
+            context: 上下文信息
+
+        Returns:
+            格式化后的 prompt
+        """
+        directory = self._get_directory()
+        # 安全地格式化，如果模板中没有占位符也不会报错
+        try:
+            return template.format(
+                request=request or "",
+                context=context or "",
+                directory=directory,
+            )
+        except KeyError:
+            # 如果模板中没有某些占位符，尝试只格式化存在的占位符
+            formatted = template
+            if "{request}" in template:
+                formatted = formatted.replace("{request}", request or "")
+            if "{context}" in template:
+                formatted = formatted.replace("{context}", context or "")
+            if "{directory}" in template:
+                formatted = formatted.replace("{directory}", directory)
+            return formatted
+
+    async def think(
+        self, request: Optional[str] = None, context: Optional[str] = None
+    ) -> (bool, str):
+        """Process current state and decide next actions using tools
+
+        Args:
+            request: 用户请求
+            context: 上下文信息
+
+        Returns:
+            (should_continue, content): 是否继续执行和思考内容
+        """
+        # 根据模板生成最终 prompt
+        final_next_step_prompt = (
+            self._format_prompt(self.next_step_prompt, request, context)
+            if self.next_step_prompt
+            else None
+        )
+        final_system_prompt = (
+            self._format_prompt(self.system_prompt, request, context)
+            if self.system_prompt
+            else None
+        )
+
+        if final_next_step_prompt:
             user_msg = Message.user_message(
-                self.next_step_prompt, multimodal_paths=self.multimodal_paths
+                final_next_step_prompt, multimodal_paths=self.multimodal_paths
             )
             self.messages += [user_msg]
 
@@ -49,8 +112,8 @@ class ToolCallAgent(ReActAgent):
             response = await self.llm.ask_tool(
                 messages=self.messages,
                 system_msgs=(
-                    [Message.system_message(self.system_prompt)]
-                    if self.system_prompt
+                    [Message.system_message(final_system_prompt)]
+                    if final_system_prompt
                     else None
                 ),
                 tools=self.available_tools.to_params(),
@@ -286,6 +349,9 @@ class ToolCallAgent(ReActAgent):
         request: Optional[str] = None,
         stream_callback=None,
         multimodal_paths: Optional[dict] = None,
+        context: Optional[str] = None,
     ) -> str:
         """Run the agent with cleanup when done."""
-        return await super().run(request, stream_callback, multimodal_paths)
+        return await super().run(
+            request, stream_callback, multimodal_paths, context
+        )

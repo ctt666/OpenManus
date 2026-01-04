@@ -9,7 +9,6 @@ from app.prompt.browser import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import Message, ToolChoice
 from app.tool import BrowserUseTool, Terminate, ToolCollection
 
-
 # Avoid circular import if BrowserAgent needs BrowserContextHelper
 if TYPE_CHECKING:
     from app.agent.base import BaseAgent  # Or wherever memory is defined
@@ -112,12 +111,31 @@ class BrowserAgent(ToolCallAgent):
         self.browser_context_helper = BrowserContextHelper(self)
         return self
 
-    async def think(self) -> (bool, str):
-        """Process current state and decide next actions using tools, with browser state info added"""
-        self.next_step_prompt = (
-            await self.browser_context_helper.format_next_step_prompt()
-        )
-        return await super().think()
+    async def think(
+        self, request: Optional[str] = None, context: Optional[str] = None
+    ) -> (bool, str):
+        """Process current state and decide next actions using tools, with browser state info added
+
+        Args:
+            request: 用户请求
+            context: 上下文信息
+
+        Returns:
+            (should_continue, content): 是否继续执行和思考内容
+        """
+        # BrowserAgent 特殊处理：动态生成 next_step_prompt
+        # 这里直接修改模板，因为 format_next_step_prompt 返回的是完整的 prompt
+        dynamic_prompt = await self.browser_context_helper.format_next_step_prompt()
+        # 临时保存原始模板
+        original_template = self.next_step_prompt
+        # 使用动态生成的 prompt（已经是格式化后的）
+        self.next_step_prompt = dynamic_prompt
+        try:
+            result = await super().think(request=request, context=context)
+        finally:
+            # 恢复原始模板
+            self.next_step_prompt = original_template
+        return result
 
     async def cleanup(self):
         """Clean up browser agent resources by calling parent cleanup."""

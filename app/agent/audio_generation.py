@@ -53,11 +53,6 @@ class AudioGenerationAgent(ToolCallAgent):
 
         self.audio_generator = DashScopeGenerator(api_key=api_key)
 
-    def set_prompt(self, render: dict):
-        """Set the prompt for the agent"""
-        self.next_step_prompt = NEXT_STEP_PROMPT.format(**render)
-        self.system_prompt = SYSTEM_PROMPT.format(**render)
-
     async def run(self, request: Optional[str] = None) -> str:
         """
         重写run方法，直接执行语音合成

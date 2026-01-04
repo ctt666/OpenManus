@@ -49,13 +49,13 @@ class TestMultimodalAgent:
         assert "ask_human" in tool_names
         assert "terminate" in tool_names
 
-    def test_set_prompt(self, agent):
-        """测试设置提示词"""
-        agent.set_prompt({"request": "分析这张图片", "directory": "/workspace"})
-
+    def test_prompt_templates(self, agent):
+        """测试提示词模板"""
+        # 验证 prompt 模板已正确设置
         assert agent.system_prompt is not None
         assert agent.next_step_prompt is not None
-        assert "分析这张图片" in agent.next_step_prompt
+        # 验证 next_step_prompt 是模板（包含占位符）
+        assert "{request}" in agent.next_step_prompt or "{context}" in agent.next_step_prompt
 
     @pytest.mark.asyncio
     async def test_create_factory_method(self, mock_llm):
