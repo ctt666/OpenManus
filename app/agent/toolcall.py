@@ -46,7 +46,10 @@ class ToolCallAgent(ReActAgent):
         return str(config.workspace_root)
 
     def _format_prompt(
-        self, template: str, request: Optional[str] = None, context: Optional[str] = None
+        self,
+        template: str,
+        request: Optional[str] = None,
+        context: Optional[str] = None,
     ) -> str:
         """根据模板和参数生成最终 prompt
 
@@ -90,22 +93,22 @@ class ToolCallAgent(ReActAgent):
             (should_continue, content): 是否继续执行和思考内容
         """
         # 根据模板生成最终 prompt
-        final_next_step_prompt = (
-            self._format_prompt(self.next_step_prompt, request, context)
-            if self.next_step_prompt
-            else None
-        )
+        # final_next_step_prompt = (
+        #     self._format_prompt(self.next_step_prompt, request, context)
+        #     if self.next_step_prompt
+        #     else None
+        # )
         final_system_prompt = (
             self._format_prompt(self.system_prompt, request, context)
             if self.system_prompt
             else None
         )
 
-        if final_next_step_prompt:
-            user_msg = Message.user_message(
-                final_next_step_prompt, multimodal_paths=self.multimodal_paths
-            )
-            self.messages += [user_msg]
+        # if final_next_step_prompt:
+        #     user_msg = Message.user_message(
+        #         final_next_step_prompt, multimodal_paths=self.multimodal_paths
+        #     )
+        #     self.messages += [user_msg]
 
         try:
             # Get response with tool options
@@ -352,6 +355,4 @@ class ToolCallAgent(ReActAgent):
         context: Optional[str] = None,
     ) -> str:
         """Run the agent with cleanup when done."""
-        return await super().run(
-            request, stream_callback, multimodal_paths, context
-        )
+        return await super().run(request, stream_callback, multimodal_paths, context)
