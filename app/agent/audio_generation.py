@@ -10,7 +10,6 @@ from app.config import config
 from app.llm import LLM
 from app.llm_dashscope import DashScopeGenerator
 from app.logger import logger
-from app.prompt.audiogen import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import AgentState, Message
 
 
@@ -53,12 +52,21 @@ class AudioGenerationAgent(ToolCallAgent):
 
         self.audio_generator = DashScopeGenerator(api_key=api_key)
 
-    async def run(self, request: Optional[str] = None) -> str:
+    async def run(
+        self,
+        request: Optional[str] = None,
+        stream_callback=None,
+        multimodal_paths: Optional[dict] = None,
+        context: Optional[str] = None,
+    ) -> str:
         """
         重写run方法，直接执行语音合成
 
         Args:
             request: 用户的语音合成需求
+            stream_callback: 流式回调函数（本Agent暂不支持）
+            multimodal_paths: 多模态参数（本Agent暂不支持）
+            context: 上下文信息（本Agent暂不使用）
 
         Returns:
             生成结果描述

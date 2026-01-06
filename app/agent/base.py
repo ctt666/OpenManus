@@ -1,7 +1,7 @@
 import asyncio
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -89,7 +89,7 @@ class BaseAgent(BaseModel, ABC):
 
     def update_memory(
         self,
-        role: ROLE_TYPE,  # type: ignore
+        role: Literal["user", "system", "assistant", "tool"],
         content: str,
         base64_image: Optional[str] = None,
         **kwargs,
@@ -114,10 +114,11 @@ class BaseAgent(BaseModel, ABC):
 
         if role not in message_map:
             raise ValueError(f"Unsupported message role: {role}")
-
+        msg_factory = message_map[role]
+        msg = msg_factory(content, **kwargs) if role == "tool" else msg_factory(content)
         # Create message with appropriate parameters based on role
         kwargs = {"base64_image": base64_image, **(kwargs if role == "tool" else {})}
-        self.memory.add_message(message_map[role](content, **kwargs))
+        self.memory.add_message(msg)
 
     async def run(
         self,

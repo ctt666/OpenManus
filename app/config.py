@@ -1,9 +1,9 @@
 import json
 import threading
-import tomllib
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import tomllib
 from pydantic import BaseModel, Field
 
 
@@ -28,6 +28,11 @@ class LLMSettings(BaseModel):
     temperature: float = Field(1.0, description="Sampling temperature")
     api_type: str = Field(..., description="Azure, Openai, or Ollama")
     api_version: str = Field(..., description="Azure Openai version if AzureOpenai")
+
+
+class ScreenshotSettings(BaseModel):
+    api_key: Optional[str] = Field(None, description="Screenshot API key")
+    base_url: Optional[str] = Field(None, description="Screenshot service URL")
 
 
 class ProxySettings(BaseModel):
@@ -159,6 +164,7 @@ class MCPSettings(BaseModel):
 
 class AppConfig(BaseModel):
     llm: Dict[str, LLMSettings]
+    screenshot: Optional[ScreenshotSettings] = None
     sandbox: Optional[SandboxSettings] = Field(
         None, description="Sandbox configuration"
     )
@@ -302,8 +308,15 @@ class Config:
             "mcp_config": mcp_settings,
             "run_flow_config": run_flow_settings,
         }
+        # Add screenshot config if present
+        if screenshot_config := raw_config.get("screenshot"):
+            config_dict["screenshot"] = screenshot_config
 
         self._config = AppConfig(**config_dict)
+
+    @property
+    def screenshot(self) -> Optional[ScreenshotSettings]:
+        return self._config.screenshot
 
     @property
     def llm(self) -> Dict[str, LLMSettings]:
