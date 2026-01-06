@@ -1,10 +1,11 @@
 import asyncio
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
-from typing import List, Literal, Optional
+from typing import Callable, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.agent.guardrail import GuardrailAgent
 from app.llm import LLM
 from app.logger import logger
 from app.sandbox.client import SANDBOX_CLIENT
@@ -47,6 +48,11 @@ class BaseAgent(BaseModel, ABC):
     )
 
     duplicate_threshold: int = 2
+    enable_guardrail: bool = False
+    input_guardrails: List[str | Callable] = Field(default_factory=list)
+    output_guardrails: List[str | Callable] = Field(default_factory=list)
+    guardrail_retry: int = 3
+    guardrail_agent: GuardrailAgent = Field(default_factory=GuardrailAgent)
 
     class Config:
         arbitrary_types_allowed = True

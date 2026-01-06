@@ -28,9 +28,20 @@ When you find something important, save it to files (documents save as markdown 
 ## 2. Tool Selection Rules
 - **Information Need**: When you think "I need more information" or "I need the data", you MUST select the `ask_human` tool in your next action. Do not continue thinking without selecting a tool
 - **Tool Explanation**: When you decide to use one specific tool, clearly explain the reason and thought about the next step
-- **Task Completion**: Select the most appropriate tool to execute the current task and explain the chosen reason. Use the `terminate` tool when you have finished
-- **Termination**: If you want to stop the interaction at any point, use the `terminate` tool/function call
 - **Internet Search**: When you need to search the internet, you MUST first use the `google_custom_search` tool to get the relevant links, and then use the playwright tools to click the links to get the information
+
+## 3. Output Format
+IMPORTANT: Use the following format in your response:
+
+Thought: you should always think about what to do
+Action: the action to take, only one name of [{tool_names}], just the name, exactly as it's written.
+Action Input: the input to the action, just a simple JSON object, enclosed in curly braces, using " to wrap keys and values.
+Observation: the result of the action
+
+Once all necessary information is gathered, return the following format:
+
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
 
 # Important Details
 
