@@ -5,12 +5,13 @@ from typing import Any, List, Optional, Union
 from pydantic import Field
 
 from app.agent.react import ReActAgent
+from app.config import config
 from app.exceptions import TokenLimitExceeded
 from app.logger import logger
 from app.prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
+from app.sandbox.core.manager import SandboxManager
 from app.schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
 from app.tool import CreateChatCompletion, Terminate, ToolCollection
-
 
 TOOL_CALL_REQUIRED = "Tool calls required but none provided"
 
@@ -33,8 +34,86 @@ class ToolCallAgent(ReActAgent):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     _current_base64_image: Optional[str] = None
 
+    # Sandbox management (Stage 3 - Agent integration)
+    sandbox_manager: Optional[SandboxManager] = None
+    sandbox_id: Optional[str] = None
+    _sandbox_initialized: bool = False
+
     max_steps: int = 30
     max_observe: Optional[Union[int, bool]] = None
+
+    # Tools that should run inside Docker sandbox
+    _SANDBOX_TOOLS = {"python_execute", "bash", "str_replace_editor"}
+
+    async def _ensure_sandbox(self) -> Optional[str]:
+        """Ensure a sandbox is created for this agent (lazy initialization).
+
+        Returns:
+            The sandbox_id if sandbox is enabled, otherwise None.
+        """
+        # If sandbox is disabled in config, do nothing
+        if not config.sandbox.use_sandbox:
+            logger.info("Sandbox is disabled via config.sandbox.use_sandbox")
+            return None
+
+        # Return existing sandbox if already initialized
+        if self._sandbox_initialized and self.sandbox_id:
+            return self.sandbox_id
+
+        # Initialize sandbox manager (singleton)
+        if self.sandbox_manager is None:
+            self.sandbox_manager = SandboxManager()
+
+        try:
+            # Prepare volume bindings based on configuration
+            volume_bindings = None
+            if getattr(config.sandbox, "mount_workspace", False):
+                # Use workspace_path if provided, otherwise use config.workspace_root
+                workspace_path = (
+                    config.sandbox.workspace_path
+                    if getattr(config.sandbox, "workspace_path", None)
+                    else str(config.workspace_root)
+                )
+                volume_bindings = {workspace_path: config.sandbox.work_dir}
+
+            # Create sandbox using configuration
+            sandbox_id = await self.sandbox_manager.create_sandbox(
+                config=config.sandbox, volume_bindings=volume_bindings
+            )
+
+            self.sandbox_id = sandbox_id
+            self._sandbox_initialized = True
+
+            logger.info(
+                f"Created sandbox '{sandbox_id}' for agent '{self.name}' "
+                f"with volume_bindings={volume_bindings}"
+            )
+            return sandbox_id
+        except Exception as e:
+            logger.error(f"Failed to create sandbox for agent '{self.name}': {e}")
+            # In case of failure, fall back to host execution
+            self.sandbox_id = None
+            self._sandbox_initialized = False
+            return None
+
+    def _tool_needs_sandbox(self, tool_name: str) -> bool:
+        """Determine whether a tool should be executed in sandbox.
+
+        Args:
+            tool_name: The name of the tool.
+
+        Returns:
+            True if the tool should be executed in sandbox, False otherwise.
+        """
+        tool_name = tool_name.lower()
+        if tool_name not in self._SANDBOX_TOOLS:
+            return False
+
+        # For str_replace_editor, also respect config.sandbox.use_sandbox
+        if tool_name == "str_replace_editor":
+            return config.sandbox.use_sandbox
+
+        return True
 
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
@@ -176,8 +255,26 @@ class ToolCallAgent(ReActAgent):
             # Parse arguments
             args = json.loads(command.function.arguments or "{}")
 
+            # Determine execution environment (host vs sandbox)
+            use_sandbox = self._tool_needs_sandbox(name)
+            if use_sandbox:
+                sandbox_id = await self._ensure_sandbox()
+                if sandbox_id:
+                    # Attach sandbox_id to tool arguments
+                    # Tools that support sandbox execution will consume this parameter
+                    args.setdefault("sandbox_id", sandbox_id)
+                    logger.info(
+                        f"🔧 Activating sandbox tool '{name}' in sandbox '{sandbox_id}'..."
+                    )
+                else:
+                    logger.warning(
+                        f"Sandbox requested for tool '{name}' but could not be created. "
+                        f"Falling back to host execution."
+                    )
+            else:
+                logger.info(f"🔧 Activating host tool: '{name}'...")
+
             # Execute the tool
-            logger.info(f"🔧 Activating tool: '{name}'...")
             result = await self.available_tools.execute(name=name, tool_input=args)
 
             # Handle special tools
@@ -227,8 +324,26 @@ class ToolCallAgent(ReActAgent):
         return name.lower() in [n.lower() for n in self.special_tool_names]
 
     async def cleanup(self):
-        """Clean up resources used by the agent's tools."""
+        """Clean up resources used by the agent's tools, including sandboxes."""
         logger.info(f"🧹 Cleaning up resources for agent '{self.name}'...")
+
+        # Clean up sandbox if it was created
+        if self.sandbox_id and self.sandbox_manager:
+            try:
+                logger.info(
+                    f"🧺 Deleting sandbox '{self.sandbox_id}' for agent '{self.name}'..."
+                )
+                await self.sandbox_manager.delete_sandbox(self.sandbox_id)
+            except Exception as e:
+                logger.error(
+                    f"🚨 Error deleting sandbox '{self.sandbox_id}' for agent '{self.name}': {e}",
+                    exc_info=True,
+                )
+            finally:
+                self.sandbox_id = None
+                self._sandbox_initialized = False
+
+        # Clean up tools
         for tool_name, tool_instance in self.available_tools.tool_map.items():
             if hasattr(tool_instance, "cleanup") and asyncio.iscoroutinefunction(
                 tool_instance.cleanup

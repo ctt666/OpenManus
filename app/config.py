@@ -1,10 +1,10 @@
 import json
 import threading
-import tomllib
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+import tomllib
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def get_project_root() -> Path:
@@ -103,10 +103,17 @@ class SandboxSettings(BaseModel):
     network_enabled: bool = Field(
         False, description="Whether network access is allowed"
     )
+    mount_workspace: bool = Field(
+        True, description="Whether to mount workspace directory"
+    )
+    workspace_path: Optional[str] = Field(
+        None,
+        description="Local workspace path, None means use config.workspace_root",
+    )
 
 
 class DaytonaSettings(BaseModel):
-    daytona_api_key: str
+    daytona_api_key: Optional[str] = Field(None, description="Daytona API key")
     daytona_server_url: Optional[str] = Field(
         "https://app.daytona.io/api", description=""
     )
@@ -172,6 +179,8 @@ class MCPSettings(BaseModel):
 
 
 class AppConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     llm: Dict[str, LLMSettings]
     sandbox: Optional[SandboxSettings] = Field(
         None, description="Sandbox configuration"
@@ -189,9 +198,6 @@ class AppConfig(BaseModel):
     daytona_config: Optional[DaytonaSettings] = Field(
         None, description="Daytona configuration"
     )
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class Config:

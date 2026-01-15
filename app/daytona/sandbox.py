@@ -38,8 +38,30 @@ if daytona_config.target:
 else:
     logger.warning("No Daytona target found in environment variables")
 
-daytona = Daytona(daytona_config)
-logger.info("Daytona client initialized")
+_daytona_client: Daytona | None = None
+
+
+def get_daytona_client() -> Daytona:
+    """
+    Lazily initialize and return the Daytona client.
+
+    IMPORTANT:
+    - Do NOT initialize Daytona at import time, because tests (and some runtimes)
+      may not have credentials available and import should remain side-effect free.
+    """
+    global _daytona_client
+    if _daytona_client is not None:
+        return _daytona_client
+
+    if not daytona_config.api_key:
+        raise RuntimeError(
+            "Daytona API key or JWT token is required. "
+            "Please set config.daytona.daytona_api_key (or corresponding env var)."
+        )
+
+    _daytona_client = Daytona(daytona_config)
+    logger.info("Daytona client initialized")
+    return _daytona_client
 
 
 async def get_or_start_sandbox(sandbox_id: str):
@@ -48,6 +70,7 @@ async def get_or_start_sandbox(sandbox_id: str):
     logger.info(f"Getting or starting sandbox with ID: {sandbox_id}")
 
     try:
+        daytona = get_daytona_client()
         sandbox = daytona.get(sandbox_id)
 
         # Check if sandbox needs to be started
@@ -105,6 +128,8 @@ def create_sandbox(password: str, project_id: str = None):
     logger.info("Creating new Daytona sandbox environment")
     logger.info("Configuring sandbox with browser-use image and environment variables")
 
+    daytona = get_daytona_client()
+
     labels = None
     if project_id:
         logger.info(f"Using sandbox_id as label: {project_id}")
@@ -152,6 +177,7 @@ async def delete_sandbox(sandbox_id: str):
     logger.info(f"Deleting sandbox with ID: {sandbox_id}")
 
     try:
+        daytona = get_daytona_client()
         # Get the sandbox
         sandbox = daytona.get(sandbox_id)
 

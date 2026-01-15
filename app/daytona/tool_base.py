@@ -3,14 +3,17 @@ from datetime import datetime
 from typing import Any, ClassVar, Dict, Optional
 
 from daytona import Daytona, DaytonaConfig, Sandbox, SandboxState
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from app.config import config
-from app.daytona.sandbox import create_sandbox, start_supervisord_session
+from app.daytona.sandbox import (
+    create_sandbox,
+    get_daytona_client,
+    start_supervisord_session,
+)
 from app.tool.base import BaseTool
 from app.utils.files_utils import clean_path
 from app.utils.logger import logger
-
 
 # load_dotenv()
 daytona_settings = config.daytona
@@ -19,7 +22,7 @@ daytona_config = DaytonaConfig(
     server_url=daytona_settings.daytona_server_url,
     target=daytona_settings.daytona_target,
 )
-daytona = Daytona(daytona_config)
+daytona: Daytona | None = None
 
 
 @dataclass
@@ -50,6 +53,8 @@ class ThreadMessage:
 class SandboxToolsBase(BaseTool):
     """Base class for all sandbox tools that provides project-based sandbox access."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # Class variable to track if sandbox URLs have been printed
     _urls_printed: ClassVar[bool] = False
 
@@ -63,10 +68,6 @@ class SandboxToolsBase(BaseTool):
     _sandbox_pass: Optional[str] = None
     workspace_path: str = Field(default="/workspace", exclude=True)
     _sessions: dict[str, str] = {}
-
-    class Config:
-        arbitrary_types_allowed = True  # Allow non-pydantic types like ThreadManager
-        underscore_attrs_are_private = True
 
     async def _ensure_sandbox(self) -> Sandbox:
         """Ensure we have a valid sandbox instance, retrieving it from the project if needed."""
@@ -103,6 +104,8 @@ class SandboxToolsBase(BaseTool):
             ):
                 logger.info(f"Sandbox is in {self._sandbox.state} state. Starting...")
                 try:
+                    global daytona
+                    daytona = daytona or get_daytona_client()
                     daytona.start(self._sandbox)
                     # Wait a moment for the sandbox to initialize
                     # sleep(5)

@@ -1,11 +1,12 @@
 """File and directory manipulation tool with sandbox support."""
 
-from collections import defaultdict
+from collections import OrderedDict, deque
 from pathlib import Path
-from typing import Any, DefaultDict, List, Literal, Optional, get_args
+from typing import Any, List, Literal, Optional, get_args
 
 from app.config import config
 from app.exceptions import ToolError
+from app.sandbox.core.manager import SandboxManager
 from app.tool import BaseTool
 from app.tool.base import CLIResult, ToolResult
 from app.tool.file_operators import (
@@ -14,7 +15,6 @@ from app.tool.file_operators import (
     PathLike,
     SandboxFileOperator,
 )
-
 
 Command = Literal[
     "view",
@@ -98,18 +98,93 @@ class StrReplaceEditor(BaseTool):
         },
         "required": ["command", "path"],
     }
-    _file_history: DefaultDict[PathLike, List[str]] = defaultdict(list)
-    _local_operator: LocalFileOperator = LocalFileOperator()
-    _sandbox_operator: SandboxFileOperator = SandboxFileOperator()
+    # Cache limits (Scheme A: tool-local constants; no config changes)
+    MAX_CACHED_SANDBOX_OPERATORS: int = 10
+    MAX_FILE_HISTORY_KEYS: int = 20
+    MAX_FILE_HISTORY_VERSIONS_PER_FILE: int = 10
 
-    # def _get_operator(self, use_sandbox: bool) -> FileOperator:
-    def _get_operator(self) -> FileOperator:
-        """Get the appropriate file operator based on execution mode."""
-        return (
-            self._sandbox_operator
-            if config.sandbox.use_sandbox
-            else self._local_operator
-        )
+    # History is kept per normalized path, with LRU eviction across paths and
+    # bounded versions per path.
+    _file_history: "OrderedDict[str, deque[str]]" = OrderedDict()
+    _local_operator: LocalFileOperator = LocalFileOperator()
+    _sandbox_operator: Optional[SandboxFileOperator] = None
+    # Cache operators by sandbox_id with LRU eviction.
+    _sandbox_operators: "OrderedDict[str, SandboxFileOperator]" = OrderedDict()
+
+    @staticmethod
+    def _normalize_history_key(path: PathLike) -> str:
+        """Normalize path-like inputs for history caching."""
+        return str(path)
+
+    def _push_file_history(self, path: PathLike, content: str) -> None:
+        """Push a file snapshot into bounded, LRU-managed history."""
+        key = self._normalize_history_key(path)
+        history = self._file_history.get(key)
+        if history is None:
+            history = deque(maxlen=self.MAX_FILE_HISTORY_VERSIONS_PER_FILE)
+            self._file_history[key] = history
+        else:
+            # Touch LRU
+            self._file_history.move_to_end(key)
+
+        history.append(content)
+
+        # Enforce LRU bound across files
+        while len(self._file_history) > self.MAX_FILE_HISTORY_KEYS:
+            self._file_history.popitem(last=False)
+
+    def _get_operator(self, sandbox_id: Optional[str] = None) -> FileOperator:
+        """Get the appropriate file operator based on execution mode.
+
+        Args:
+            sandbox_id: Optional sandbox ID to use. If provided, creates or reuses
+                a SandboxFileOperator for that specific sandbox. If None, uses
+                existing logic based on config.sandbox.use_sandbox.
+
+        Returns:
+            FileOperator: The appropriate file operator instance.
+        """
+        # If sandbox_id is provided, use agent-level sandbox
+        if sandbox_id:
+            manager = SandboxManager()
+
+            operator = self._sandbox_operators.get(sandbox_id)
+            if operator is None:
+                operator = SandboxFileOperator(
+                    sandbox_id=sandbox_id,
+                    sandbox_manager=manager,
+                )
+                self._sandbox_operators[sandbox_id] = operator
+            else:
+                # Touch LRU
+                self._sandbox_operators.move_to_end(sandbox_id)
+
+            # Enforce LRU bound across sandbox operators
+            while len(self._sandbox_operators) > self.MAX_CACHED_SANDBOX_OPERATORS:
+                self._sandbox_operators.popitem(last=False)
+
+            return operator
+
+        # Otherwise, use existing logic (backward compatible)
+        if config.sandbox.use_sandbox:
+            # Lazy initialization to avoid creating async resources at module import time
+            if self._sandbox_operator is None:
+                self._sandbox_operator = SandboxFileOperator()
+            return self._sandbox_operator
+        else:
+            return self._local_operator
+
+    @classmethod
+    def cleanup_sandbox_operator(cls, sandbox_id: str) -> None:
+        """Clean up cached operator for a deleted sandbox.
+
+        This method should be called when a sandbox is deleted to prevent
+        memory leaks from stale operator references.
+
+        Args:
+            sandbox_id: The sandbox ID that was deleted.
+        """
+        cls._sandbox_operators.pop(sandbox_id, None)
 
     async def execute(
         self,
@@ -121,14 +196,38 @@ class StrReplaceEditor(BaseTool):
         old_str: str | None = None,
         new_str: str | None = None,
         insert_line: int | None = None,
+        sandbox_id: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
-        """Execute a file operation command."""
+        """Execute a file operation command.
+
+        Args:
+            command: The command to execute.
+            path: File or directory path.
+            file_text: Content for create command.
+            view_range: Line range for view command.
+            old_str: Old string for str_replace command.
+            new_str: New string for str_replace or insert command.
+            insert_line: Line number for insert command.
+            sandbox_id: Optional sandbox ID to use. If provided, uses agent-level
+                sandbox instead of global sandbox or local filesystem.
+            **kwargs: Additional arguments.
+
+        Returns:
+            str: Command execution result.
+        """
         # Get the appropriate file operator
-        operator = self._get_operator()
+        operator = self._get_operator(sandbox_id=sandbox_id)
 
         # Validate path and command combination
-        await self.validate_path(command, Path(path), operator)
+        # If using sandbox_id and operation fails with KeyError, clean up cache
+        try:
+            await self.validate_path(command, Path(path), operator)
+        except (KeyError, RuntimeError) as e:
+            # If sandbox doesn't exist, clean up cache
+            if sandbox_id and ("not found" in str(e).lower() or "Sandbox" in str(e)):
+                self.cleanup_sandbox_operator(sandbox_id)
+            raise
 
         # Execute the appropriate command
         if command == "view":
@@ -137,7 +236,7 @@ class StrReplaceEditor(BaseTool):
             if file_text is None:
                 raise ToolError("Parameter `file_text` is required for command: create")
             await operator.write_file(path, file_text)
-            self._file_history[path].append(file_text)
+            self._push_file_history(path, file_text)
             result = ToolResult(output=f"File created successfully at: {path}")
         elif command == "str_replace":
             if old_str is None:
@@ -320,7 +419,7 @@ class StrReplaceEditor(BaseTool):
         await operator.write_file(path, new_file_content)
 
         # Save the original content to history
-        self._file_history[path].append(file_content)
+        self._push_file_history(path, file_content)
 
         # Create a snippet of the edited section
         replacement_line = file_content.split(old_str)[0].count("\n")
@@ -378,7 +477,7 @@ class StrReplaceEditor(BaseTool):
         snippet = "\n".join(snippet_lines)
 
         await operator.write_file(path, new_file_text)
-        self._file_history[path].append(file_text)
+        self._push_file_history(path, file_text)
 
         # Prepare success message
         success_msg = f"The file {path} has been edited. "
@@ -395,10 +494,17 @@ class StrReplaceEditor(BaseTool):
         self, path: PathLike, operator: FileOperator = None
     ) -> CLIResult:
         """Revert the last edit made to a file."""
-        if not self._file_history[path]:
+        key = self._normalize_history_key(path)
+        history = self._file_history.get(key)
+        if not history:
             raise ToolError(f"No edit history found for {path}.")
 
-        old_text = self._file_history[path].pop()
+        old_text = history.pop()
+        # Touch LRU and drop empty history buckets to free memory.
+        if not history:
+            self._file_history.pop(key, None)
+        else:
+            self._file_history.move_to_end(key)
         await operator.write_file(path, old_text)
 
         return CLIResult(
