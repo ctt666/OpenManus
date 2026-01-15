@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BaseTool(ABC, BaseModel):
@@ -35,13 +35,12 @@ class BaseTool(ABC, BaseModel):
 class ToolResult(BaseModel):
     """Represents the result of a tool execution."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     output: Any = Field(default=None)
     error: Optional[str] = Field(default=None)
     base64_image: Optional[str] = Field(default=None)
     system: Optional[str] = Field(default=None)
-
-    class Config:
-        arbitrary_types_allowed = True
 
     def __bool__(self):
         return any(getattr(self, field) for field in self.__fields__)

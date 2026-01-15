@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import tomllib
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def get_project_root() -> Path:
@@ -108,7 +108,13 @@ class SandboxSettings(BaseModel):
     network_enabled: bool = Field(
         False, description="Whether network access is allowed"
     )
-
+    mount_workspace: bool = Field(
+        True, description="Whether to mount workspace directory"
+    )
+    workspace_path: Optional[str] = Field(
+        None,
+        description="Local workspace path, None means use config.workspace_root",
+    )
 
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server"""
@@ -163,6 +169,8 @@ class MCPSettings(BaseModel):
 
 
 class AppConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     llm: Dict[str, LLMSettings]
     screenshot: Optional[ScreenshotSettings] = None
     sandbox: Optional[SandboxSettings] = Field(
@@ -178,9 +186,6 @@ class AppConfig(BaseModel):
     run_flow_config: Optional[RunflowSettings] = Field(
         None, description="Run flow configuration"
     )
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class Config:

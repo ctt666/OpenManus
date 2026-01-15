@@ -3,8 +3,8 @@ import os
 from typing import Optional
 
 from app.exceptions import ToolError
+from app.sandbox.core.manager import SandboxManager
 from app.tool.base import BaseTool, CLIResult
-
 
 _BASH_DESCRIPTION = """Execute a bash command in the terminal.
 * Long running commands: For commands that may run indefinitely, it should be run in the background and the output should be redirected to a file, e.g. command = `python3 app_demo.py > server.log 2>&1 &`.
@@ -130,10 +130,116 @@ class Bash(BaseTool):
     }
 
     _session: Optional[_BashSession] = None
+    _sandbox_sessions: dict[str, dict] = (
+        {}
+    )  # Track sandbox sessions for state (working_dir, etc.)
 
     async def execute(
-        self, command: str | None = None, restart: bool = False, **kwargs
+        self,
+        command: str | None = None,
+        restart: bool = False,
+        sandbox_id: Optional[str] = None,
+        sandbox_manager: Optional[SandboxManager] = None,
+        **kwargs,
     ) -> CLIResult:
+        """
+        Execute a bash command.
+
+        Args:
+            command: The bash command to execute.
+            restart: Whether to restart the session.
+            sandbox_id: Optional sandbox ID to execute in Docker sandbox.
+                If provided, command will be executed in the sandbox.
+            sandbox_manager: Optional SandboxManager instance.
+            **kwargs: Additional arguments.
+
+        Returns:
+            CLIResult: Command execution result.
+        """
+        # If sandbox_id is provided, execute in Docker sandbox
+        if sandbox_id:
+            return await self._execute_in_sandbox(
+                command, restart, sandbox_id, sandbox_manager
+            )
+
+        # Otherwise, use local execution (backward compatible)
+        return await self._execute_locally(command, restart)
+
+    async def _execute_in_sandbox(
+        self,
+        command: str | None,
+        restart: bool,
+        sandbox_id: str,
+        sandbox_manager: Optional[SandboxManager],
+    ) -> CLIResult:
+        """Execute command in Docker sandbox.
+
+        Tracks sandbox session state (like working directory) in _sandbox_sessions.
+        Note: Sandbox terminal maintains session state automatically, but we track
+        additional metadata here for potential future use.
+        """
+        manager = sandbox_manager or SandboxManager()
+
+        if restart:
+            # Clear sandbox session state
+            if sandbox_id in self._sandbox_sessions:
+                del self._sandbox_sessions[sandbox_id]
+            return CLIResult(system="tool has been restarted.")
+
+        if command is None:
+            raise ToolError("no command provided.")
+
+        # Initialize session state if not exists
+        if sandbox_id not in self._sandbox_sessions:
+            self._sandbox_sessions[sandbox_id] = {
+                "working_dir": "/workspace",  # Default working directory
+                "initialized": False,
+            }
+
+        try:
+            # Get sandbox instance
+            async with manager.sandbox_operation(sandbox_id) as sandbox:
+                # Execute command in sandbox
+                # Note: Sandbox terminal maintains session state automatically
+                # We track working directory changes for reference
+                try:
+                    # If command changes directory, update our tracking
+                    if command.strip().startswith("cd "):
+                        # Extract target directory (simplified, may not handle all cases)
+                        parts = command.strip().split(None, 1)
+                        if len(parts) > 1:
+                            target_dir = parts[1].strip().strip("'\"")
+                            self._sandbox_sessions[sandbox_id][
+                                "working_dir"
+                            ] = target_dir
+
+                    output = await sandbox.run_command(command, timeout=120)
+
+                    # Update session state if needed (e.g., after pwd command)
+                    if command.strip() == "pwd":
+                        if output.strip():
+                            self._sandbox_sessions[sandbox_id][
+                                "working_dir"
+                            ] = output.strip()
+
+                    self._sandbox_sessions[sandbox_id]["initialized"] = True
+                    return CLIResult(output=output, error="")
+                except Exception as e:
+                    error_msg = str(e)
+                    return CLIResult(
+                        output="",
+                        error=f"Error executing command in sandbox: {error_msg}",
+                    )
+        except KeyError:
+            # Sandbox not found, clean up session state
+            if sandbox_id in self._sandbox_sessions:
+                del self._sandbox_sessions[sandbox_id]
+            return CLIResult(output="", error=f"Sandbox {sandbox_id} not found")
+        except Exception as e:
+            return CLIResult(output="", error=f"Error accessing sandbox: {str(e)}")
+
+    async def _execute_locally(self, command: str | None, restart: bool) -> CLIResult:
+        """Execute command locally (backward compatible)."""
         if restart:
             if self._session:
                 self._session.stop()

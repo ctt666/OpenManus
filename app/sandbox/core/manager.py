@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
@@ -18,6 +19,9 @@ class SandboxManager:
     monitoring, and cleanup. Provides concurrent access control and automatic
     cleanup mechanisms for sandbox resources.
 
+    This class implements a singleton pattern to ensure only one instance
+    exists globally.
+
     Attributes:
         max_sandboxes: Maximum allowed number of sandboxes.
         idle_timeout: Sandbox idle timeout in seconds.
@@ -25,6 +29,18 @@ class SandboxManager:
         _sandboxes: Active sandbox instance mapping.
         _last_used: Last used time record for sandboxes.
     """
+
+    _instance: Optional["SandboxManager"] = None
+    _lock = threading.Lock()
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        """Singleton pattern implementation."""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(
         self,
@@ -39,28 +55,38 @@ class SandboxManager:
             idle_timeout: Idle timeout in seconds.
             cleanup_interval: Cleanup check interval in seconds.
         """
-        self.max_sandboxes = max_sandboxes
-        self.idle_timeout = idle_timeout
-        self.cleanup_interval = cleanup_interval
+        # Prevent re-initialization of singleton instance
+        if SandboxManager._initialized:
+            return
 
-        # Docker client
-        self._client = docker.from_env()
+        with SandboxManager._lock:
+            if SandboxManager._initialized:
+                return
 
-        # Resource mappings
-        self._sandboxes: Dict[str, DockerSandbox] = {}
-        self._last_used: Dict[str, float] = {}
+            self.max_sandboxes = max_sandboxes
+            self.idle_timeout = idle_timeout
+            self.cleanup_interval = cleanup_interval
 
-        # Concurrency control
-        self._locks: Dict[str, asyncio.Lock] = {}
-        self._global_lock = asyncio.Lock()
-        self._active_operations: Set[str] = set()
+            # Docker client
+            self._client = docker.from_env()
 
-        # Cleanup task
-        self._cleanup_task: Optional[asyncio.Task] = None
-        self._is_shutting_down = False
+            # Resource mappings
+            self._sandboxes: Dict[str, DockerSandbox] = {}
+            self._last_used: Dict[str, float] = {}
 
-        # Start automatic cleanup
-        self.start_cleanup_task()
+            # Concurrency control
+            self._locks: Dict[str, asyncio.Lock] = {}
+            self._global_lock = asyncio.Lock()
+            self._active_operations: Set[str] = set()
+
+            # Cleanup task
+            self._cleanup_task: Optional[asyncio.Task] = None
+            self._is_shutting_down = False
+
+            # Start automatic cleanup
+            self.start_cleanup_task()
+
+            SandboxManager._initialized = True
 
     async def ensure_image(self, image: str) -> bool:
         """Ensures Docker image is available.
@@ -210,11 +236,19 @@ class SandboxManager:
 
         # Cancel cleanup task
         if self._cleanup_task:
-            self._cleanup_task.cancel()
             try:
-                await asyncio.wait_for(self._cleanup_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+                self._cleanup_task.cancel()
+                try:
+                    await asyncio.wait_for(self._cleanup_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            except RuntimeError:
+                # Event loop may be closed or different; log and continue cleanup
+                logger.warning(
+                    "Failed to cancel/await cleanup task due to event loop state; "
+                    "continuing SandboxManager.cleanup()",
+                    exc_info=True,
+                )
 
         # Get all sandbox IDs to clean up
         async with self._global_lock:

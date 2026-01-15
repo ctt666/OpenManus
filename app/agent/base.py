@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
 from typing import Callable, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent.guardrail import GuardrailAgent
 from app.llm import LLM
@@ -54,9 +54,10 @@ class BaseAgent(BaseModel, ABC):
     guardrail_retry: int = 3
     guardrail_agent: GuardrailAgent = Field(default_factory=GuardrailAgent)
 
-    class Config:
-        arbitrary_types_allowed = True
-        extra = "allow"  # Allow extra fields for flexibility in subclasses
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="allow",  # Allow extra fields for flexibility in subclasses
+    )
 
     @model_validator(mode="after")
     def initialize_agent(self) -> "BaseAgent":

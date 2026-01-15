@@ -94,6 +94,8 @@ temperature = 0.0                          # Controls randomness for vision mode
 #cpu_limit = 2.0
 #timeout = 300
 #network_enabled = true
+#mount_workspace = true  # Whether to mount workspace directory
+#workspace_path = null   # Local workspace path, null means use config.workspace_root
 
 # MCP (Model Context Protocol) configuration
 [mcp]

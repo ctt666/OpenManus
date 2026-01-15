@@ -110,9 +110,19 @@ class DockerSandbox:
         """
         bindings = {}
 
-        # Create and add working directory mapping
-        work_dir = self._ensure_host_dir(self.config.work_dir)
-        bindings[work_dir] = {"bind": self.config.work_dir, "mode": "rw"}
+        # Create and add working directory mapping, unless caller already
+        # provided a binding for the same container mount point.
+        #
+        # Without this guard, passing volume_bindings like {<host>: "/workspace"}
+        # would produce duplicate mount points and Docker will reject container
+        # creation with: Bad Request ("Duplicate mount point: /workspace")
+        has_workdir_binding = any(
+            container_path == self.config.work_dir
+            for container_path in self.volume_bindings.values()
+        )
+        if not has_workdir_binding:
+            work_dir = self._ensure_host_dir(self.config.work_dir)
+            bindings[work_dir] = {"bind": self.config.work_dir, "mode": "rw"}
 
         # Add custom volume bindings
         for host_path, container_path in self.volume_bindings.items():
