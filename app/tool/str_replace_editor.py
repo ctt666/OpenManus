@@ -1,4 +1,5 @@
 """File and directory manipulation tool with sandbox support."""
+
 import asyncio
 from collections import OrderedDict, deque
 from pathlib import Path
@@ -547,11 +548,14 @@ class StrReplaceEditor(BaseTool):
             + "\n"
         )
 
+
 async def main():
     tool = StrReplaceEditor()
-    args = {'command': 'view', 'path': 'D:\\python_project\\OpenManus\\workspace'}
+    args = {"command": "view", "path": "D:\\python_project\\OpenManus\\workspace"}
     result = await tool.execute(**args)
     print(result)
+
+
 #     D:\\python_project\\OpenManus\\workspace
 
 if __name__ == "__main__":
