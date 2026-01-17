@@ -239,13 +239,6 @@ class ToolExecutor:
             return await available_tools.execute(name=tool_name, tool_input=prepared)
 
         # First attempt + potential retries
-        if args is None:
-            # 防御式兜底：理论上不会发生，但避免未来改动导致 None 进入执行阶段
-            return (
-                ToolFailure(error=f"Error parsing arguments for {tool_name}"),
-                args_str,
-            )
-
         while True:
             try:
                 result = await _do_execute(args, attempt=exec_attempt)
