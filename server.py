@@ -1034,6 +1034,7 @@ async def run_flow_task(
                 raise HTTPException(status_code=400, detail=str(e))
 
         # 组装 agents 与 flow
+        # TODO: 添加专业agent: 财报专家, 旅行专家, 网络专家, 股票专家, ppt专家, 技术博客专家, vlog专家, ps专家, 头像专家
         agents = {
             "flow": await FlowAgent().create(),
             "imagegeneration": ImageGenerationAgent(),

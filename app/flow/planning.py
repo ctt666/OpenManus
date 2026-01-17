@@ -1,17 +1,24 @@
 import json
 import time
 from enum import Enum
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import Field
 
 from app.agent.base import BaseAgent
+from app.agent.guardrail import (
+    GuardrailAction,
+    GuardrailAgent,
+    GuardrailBoundary,
+    GuardrailEngine,
+)
 from app.config import config
+from app.exceptions import TokenLimitExceeded
 from app.flow.base import BaseFlow
 from app.llm import LLM
 from app.logger import logger
 from app.prompt import planning_flow
-from app.schema import AgentState, Memory, Message, ToolChoice
+from app.schema import AgentState, Memory, Message
 from app.tool import PlanningTool
 
 
@@ -53,6 +60,10 @@ class PlanningFlow(BaseFlow):
     executor_keys: List[str] = Field(default_factory=list)
     active_plan_id: str = Field(default_factory=lambda: f"plan_{int(time.time())}")
     current_step_index: Optional[int] = None
+    max_loops: int = Field(default=10, description="Maximum heuristic planning loops")
+    planner_parse_retries: int = Field(
+        default=2, description="Retries when planner output is invalid"
+    )
 
     def __init__(
         self, agents: Union[BaseAgent, List[BaseAgent], Dict[str, BaseAgent]], **data
@@ -100,76 +111,350 @@ class PlanningFlow(BaseFlow):
         multimodal_paths: Optional[dict] = None,
         stream_callback=None,
     ) -> str:
-        """Execute the planning flow with agents."""
+        """Execute the planning flow with heuristic planning loop."""
         try:
             if not self.primary_agent:
                 raise ValueError("No primary agent available")
 
-            precede_step_result = ""
             # Create initial plan if input provided
             if not input_text:
-                return f"Cannot create plan for empty input"
+                return "Cannot create plan for empty input"
 
+            # ---------------- Guardrails: user-level flow input ----------------
+            guard_settings = getattr(config, "guardrail", None)
+            if (
+                guard_settings
+                and getattr(guard_settings, "enabled", False)
+                and getattr(
+                    getattr(guard_settings, "flow_input", None), "enabled", False
+                )
+            ):
+                in_res = await GuardrailEngine.enforce(
+                    boundary=GuardrailBoundary.FLOW_INPUT,
+                    text=input_text,
+                    guardrails=getattr(guard_settings.flow_input, "guards", []),
+                    enabled=True,
+                    policy=[GuardrailAction.REDACT, GuardrailAction.BLOCK],
+                    max_retries=0,
+                    guardrail_agent=GuardrailAgent(llm=self.primary_agent.llm),
+                    flow_type="planning",
+                )
+                if in_res.blocked:
+                    return in_res.text
+                input_text = in_res.text
+
+            # Initialize plan (metadata + placeholder step) if needed
             if input_text and self.active_plan_id not in self.planning_tool.plans:
                 # 创建workspace下的工作目录
                 workspace_dir = config.workspace_root / self.active_plan_id
                 workspace_dir.mkdir(parents=True, exist_ok=True)
+                await self._init_heuristic_plan(origin_request=input_text)
 
-                await self._create_initial_plan(input_text, multimodal_paths)
-
-                # Verify plan was created successfully
-                if self.active_plan_id not in self.planning_tool.plans:
-                    logger.error(
-                        f"Plan creation failed. Plan ID {self.active_plan_id} not found in planning tool."
-                    )
-                    return f"Failed to create plan for: {input_text}"
-            else:
-                precede_step_result = await self.__get_precede_step_result(
-                    self.current_step_index
+            # Heuristic planning loop
+            origin_request = input_text
+            last_output = ""
+            for iter_idx in range(1, int(self.max_loops) + 1):
+                decision = await self._heuristic_planner_decide(
+                    origin_request=origin_request,
+                    last_output=last_output,
+                    iter_idx=iter_idx,
                 )
-                precede_step_result += input_text
 
-            while True:
-                # Get current step to execute
-                self.current_step_index, step_info = await self._get_current_step_info()
-
-                # Exit if no more steps or plan completed
-                if self.current_step_index is None:
-                    summary_result = await self._finalize_plan(
-                        multimodal_paths=multimodal_paths,
-                        stream_callback=stream_callback,
+                # end=true (or missing): directly return final answer (reason)
+                if decision.get("end", True):
+                    final_answer = str(decision.get("reason", "") or "").strip()
+                    note = {
+                        "iter": iter_idx,
+                        "planner": decision,
+                        "context": self._build_executor_context(
+                            origin_request=origin_request,
+                            last_output=last_output,
+                            objective=str(decision.get("reason", "") or ""),
+                        ),
+                        "agent_name": str(decision.get("agent", "") or ""),
+                        "step_output": final_answer,
+                    }
+                    await self._append_step_and_write_note(
+                        step_text=f"[HEURISTIC] final iter={iter_idx}",
+                        note_obj=note,
+                        step_status=PlanStepStatus.COMPLETED.value,
                     )
-                    logger.info(f"Flow summary result: {summary_result}")
-                    return summary_result
+                    return await self._apply_flow_output_guardrail(final_answer)
 
-                # logger.info(f"Start executing step: {step_info['text']}")
-                # Execute current step with appropriate agent
-                step_type = step_info.get("type") if step_info else None
-                logger.debug(f"Step type: {step_type}")
-                executor = self.get_executor(step_type)
+                # end=false: select agent strictly and execute
+                agent_key = decision.get("agent")
+                if not agent_key or agent_key not in self.agents:
+                    # This should be prevented by _heuristic_planner_decide; treat as blocked.
+                    raise ValueError(f"Invalid agent selected by planner: {agent_key}")
+
+                executor = self.get_executor(str(agent_key))
                 executor.memory.add_messages(self.memory.get_recent_messages(1))
-                step_result = await self._execute_step(
-                    executor,
-                    precede_step_result,
+                objective = str(decision.get("reason", "") or "").strip()
+                context = self._build_executor_context(
+                    origin_request=origin_request,
+                    last_output=last_output,
+                    objective=objective,
+                )
+                request = (
+                    f"请完成当前目标：{objective}" if objective else "请继续完成任务。"
+                )
+                step_output = await executor.run(
+                    request=request,
+                    context=context,
                     multimodal_paths=multimodal_paths,
                     stream_callback=stream_callback,
                 )
-                logger.info(f"Step result: {step_result}")
-                await self.__update_current_step_result(step_result)
+
+                note = {
+                    "iter": iter_idx,
+                    "planner": decision,
+                    "context": context,
+                    "agent_name": str(agent_key),
+                    "step_output": step_output,
+                }
+                await self._append_step_and_write_note(
+                    step_text=f"[HEURISTIC] iter={iter_idx} agent={agent_key}",
+                    note_obj=note,
+                    step_status=PlanStepStatus.COMPLETED.value,
+                )
 
                 # 判断ask_human
-                if step_result and "INTERACTION_REQUIRED:" in step_result:
-                    return step_result
+                if step_output and "INTERACTION_REQUIRED:" in str(step_output):
+                    return str(step_output)
 
-                precede_step_result = await self.__get_precede_step_result(
-                    self.current_step_index
-                )
-                # logger.info(
-                #     f"Finish executing step {self.current_step_index}: {step_info['text']}"
-                # )
+                last_output = str(step_output or "")
+
+            # Reached max loops without end=true
+            progress = self._generate_plan_text_from_storage()
+            err_text = (
+                f"未收敛：已达到最大循环次数 {self.max_loops}，仍未得到 end=true。\n"
+                f"PlanID: {self.active_plan_id}\n\n当前进度：\n{progress}"
+            )
+            return err_text
         except Exception as e:
+            # 按需求：token 超限时直接抛出，让 server 标记 flow 失败并提示用户重新开启会话
+            if isinstance(e, TokenLimitExceeded):
+                raise
             logger.error(f"Error in PlanningFlow: {str(e)}")
             return f"Execution failed: {str(e)}"
+
+    async def _apply_flow_output_guardrail(self, text: str) -> str:
+        """Apply flow output guardrails (if enabled) and return processed text."""
+        guard_settings = getattr(config, "guardrail", None)
+        if (
+            guard_settings
+            and getattr(guard_settings, "enabled", False)
+            and getattr(getattr(guard_settings, "flow_output", None), "enabled", False)
+            and text
+        ):
+            out_res = await GuardrailEngine.enforce(
+                boundary=GuardrailBoundary.FLOW_OUTPUT,
+                text=text,
+                guardrails=getattr(guard_settings.flow_output, "guards", []),
+                enabled=True,
+                policy=[
+                    GuardrailAction.REDACT,
+                    GuardrailAction.RETRY,
+                    GuardrailAction.BLOCK,
+                ],
+                max_retries=int(
+                    getattr(getattr(guard_settings, "retry", None), "max_attempts", 0)
+                    or 0
+                ),
+                guardrail_agent=GuardrailAgent(llm=self.primary_agent.llm),
+                flow_type="planning",
+            )
+            return out_res.text
+        return text
+
+    async def _init_heuristic_plan(self, origin_request: str) -> None:
+        """Initialize a heuristic plan with metadata and a placeholder step."""
+        title = f"Heuristic plan: {origin_request[:50]}{'...' if len(origin_request) > 50 else ''}"
+        await self.planning_tool.execute(
+            command="create",
+            plan_id=self.active_plan_id,
+            title=title,
+            request=origin_request,
+            steps=["[HEURISTIC] init"],
+        )
+        # Mark placeholder step completed and store metadata note
+        meta_note = {
+            "iter": 0,
+            "planner": {"end": False, "agent": "", "reason": "init plan metadata"},
+            "context": "",
+            "agent_name": "planner",
+            "step_output": "",
+        }
+        await self.planning_tool.execute(
+            command="mark_step",
+            plan_id=self.active_plan_id,
+            step_index=0,
+            step_status=PlanStepStatus.COMPLETED.value,
+            step_notes=json.dumps(meta_note, ensure_ascii=False),
+        )
+
+    def _get_agents_description(self) -> str:
+        agents_description = ""
+        for key in self.executor_keys:
+            if key in self.agents:
+                agents_description += f"- {key}: {self.agents[key].description}\n"
+        return agents_description.strip()
+
+    async def _heuristic_planner_decide(
+        self, *, origin_request: str, last_output: str, iter_idx: int
+    ) -> Dict[str, Any]:
+        """
+        Ask LLM to output a strict JSON decision: {end: bool, agent: str, reason: str}.
+        Retries on parse errors or invalid agent selection up to planner_parse_retries.
+        """
+        agents_info = self._get_agents_description()
+        system_msg = Message.system_message(
+            planning_flow.HEURISTIC_PLANNING_SYSTEM_PROMPT
+        )
+
+        last_error: Optional[str] = None
+        for attempt in range(int(self.planner_parse_retries) + 1):
+            user_prompt = planning_flow.HEURISTIC_PLANNING_USER_PROMPT.format(
+                request=origin_request,
+                last_output=last_output or "",
+                agents_info=agents_info,
+            )
+            if attempt > 0 and last_error:
+                user_prompt += (
+                    "\n\n### 注意\n"
+                    f"上一次输出不符合要求：{last_error}\n"
+                    "请严格只输出单个 JSON 对象。"
+                )
+
+            raw = await self.llm.ask(
+                messages=[Message.user_message(user_prompt)],
+                system_msgs=[system_msg],
+            )
+            try:
+                decision = self._parse_planner_json(raw)
+                decision["raw"] = raw
+
+                # Validate schema
+                if "end" not in decision:
+                    decision["end"] = True
+                if not isinstance(decision.get("end"), bool):
+                    raise ValueError("field `end` must be boolean")
+                if not isinstance(decision.get("reason"), str):
+                    raise ValueError("field `reason` must be string")
+                if decision["end"] is False:
+                    agent = decision.get("agent")
+                    if not isinstance(agent, str) or not agent.strip():
+                        raise ValueError(
+                            "field `agent` must be non-empty string when end=false"
+                        )
+                    if agent not in self.agents:
+                        raise ValueError(
+                            f"selected agent '{agent}' not found; must exactly match an available executor key"
+                        )
+                else:
+                    # end=true: allow empty agent
+                    if "agent" not in decision:
+                        decision["agent"] = ""
+                return decision
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(
+                    f"Heuristic planner output invalid (attempt {attempt + 1}/{int(self.planner_parse_retries) + 1}): {last_error}"
+                )
+
+        # Exceeded retries
+        progress = self._generate_plan_text_from_storage()
+        raise ValueError(
+            "Planner 输出无法解析或 agent 不合法，已超过重试次数。"
+            f"\nLastError: {last_error}\n\n当前进度：\n{progress}"
+        )
+
+    def _parse_planner_json(self, raw: Optional[str]) -> Dict[str, Any]:
+        """Parse planner output into JSON dict, tolerating accidental code fences."""
+        if raw is None:
+            raise ValueError("planner returned empty response")
+        text = str(raw).strip()
+        if not text:
+            raise ValueError("planner returned empty response")
+
+        # Strip accidental markdown code fences
+        if text.startswith("```"):
+            parts = text.split("```")
+            # try to find the largest non-empty segment
+            candidates = [
+                p.strip() for p in parts if p.strip() and "{" in p and "}" in p
+            ]
+            if candidates:
+                text = candidates[0]
+
+        # Try direct json
+        try:
+            obj = json.loads(text)
+            if not isinstance(obj, dict):
+                raise ValueError("planner JSON must be an object")
+            return obj
+        except json.JSONDecodeError as e:
+            logger.debug(
+                "Planner JSON direct parse failed; will try extracting JSON object substring. "
+                f"error={e}; text_preview={text[:300]!r}"
+            )
+
+        # Try to extract first JSON object substring
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            obj_text = text[start : end + 1]
+            obj = json.loads(obj_text)
+            if not isinstance(obj, dict):
+                raise ValueError("planner JSON must be an object")
+            return obj
+
+        raise ValueError("planner output is not valid JSON object")
+
+    def _build_executor_context(
+        self, *, origin_request: str, last_output: str, objective: str
+    ) -> str:
+        """Build per-step context combining origin request + last output + current objective."""
+        parts = [
+            "### Task",
+            origin_request.strip(),
+            "",
+            "### CurrentObjective",
+            (objective or "").strip(),
+        ]
+        if last_output:
+            parts += ["", "### PreviousOutput", last_output.strip()]
+        parts += [
+            "",
+            "### Constraints",
+            "- 只专注当前目标，不要偏离。",
+            "",
+            "### OutputRequirements",
+            "- 直接给出可用的结果或下一步产出，不要输出无关内容。",
+        ]
+        return "\n".join(parts).strip()
+
+    async def _append_step_and_write_note(
+        self, *, step_text: str, note_obj: Dict[str, Any], step_status: str
+    ) -> None:
+        """Append a new step to plan and write JSON note, then mark status."""
+        if self.active_plan_id not in self.planning_tool.plans:
+            raise ValueError(f"Plan with ID {self.active_plan_id} not found")
+
+        plan_data = self.planning_tool.plans[self.active_plan_id]
+        steps = list(plan_data.get("steps", []) or [])
+        steps.append(step_text)
+        await self.planning_tool.execute(
+            command="update", plan_id=self.active_plan_id, steps=steps
+        )
+        step_index = len(steps) - 1
+        await self.planning_tool.execute(
+            command="mark_step",
+            plan_id=self.active_plan_id,
+            step_index=step_index,
+            step_status=step_status,
+            step_notes=json.dumps(note_obj, ensure_ascii=False),
+        )
 
     async def _create_initial_plan(
         self, request: str, multimodal_paths: Optional[dict] = None
@@ -377,6 +662,8 @@ class PlanningFlow(BaseFlow):
 
             return results
         except Exception as e:
+            if isinstance(e, TokenLimitExceeded):
+                raise
             logger.error(f"Error executing step {self.current_step_index}: {e}")
             return f"Error executing step {self.current_step_index}: {str(e)}"
 

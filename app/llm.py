@@ -14,6 +14,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessage
 from tenacity import (
     retry,
     retry_if_exception_type,
+    retry_if_not_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -24,8 +25,6 @@ from app.exceptions import TokenLimitExceeded
 from app.logger import logger  # Assuming a logger is set up in your app
 from app.schema import (
     ROLE_VALUES,
-    TOOL_CHOICE_TYPE,
-    TOOL_CHOICE_VALUES,
     Message,
     ToolChoice,
 )
@@ -305,6 +304,172 @@ class LLM:
 
         return system_messages + truncated_messages
 
+    # ----------------- 会话压缩（summarizer） -----------------
+    _SUMMARIZER_SYSTEM_PROMPT = (
+        "你是一个会话压缩助手。你的任务是将历史对话压缩为一段可供后续继续对话的摘要。\n"
+        "要求：\n"
+        "- 只总结历史中明确出现的信息，不要编造。\n"
+        "- 保留关键事实、约束、用户偏好、已做出的决定、未完成事项、重要输出（含工具输出要点）。\n"
+        "- 语言：中文。\n"
+        "- 输出应尽量精炼，但不要遗漏关键细节。\n"
+    )
+
+    _SUMMARIZER_USER_PROMPT = (
+        "请将以下【历史会话】压缩成一段摘要，供后续模型继续完成任务时作为上下文。\n\n"
+        "【历史会话】\n"
+        "{transcript}\n"
+    )
+
+    _TOKEN_LIMIT_REOPEN_SESSION_MSG = (
+        "会话过长，已无法在当前上下文长度限制下继续执行。请重新开启会话后再试。"
+    )
+
+    def _require_summarizer_config(self) -> None:
+        """强制要求存在独立 summarizer 配置（不允许静默回退到 default）。"""
+        try:
+            if "summarizer" not in config.llm:
+                raise KeyError("llm.summarizer")
+        except Exception as e:
+            raise TokenLimitExceeded(
+                "缺少独立 summarizer 配置（[llm.summarizer]）。请在 config.toml 中补充后重试。"
+            ) from e
+
+    @staticmethod
+    def _get_role(msg: Union[dict, Message]) -> str:
+        return msg.get("role") if isinstance(msg, dict) else str(msg.role)
+
+    def _find_last_user_index(
+        self, messages: List[Union[dict, Message]]
+    ) -> Optional[int]:
+        # 从第一条开始遍历，但返回最后一次出现的 user（保留“当前请求 user”语义）
+        last_idx: Optional[int] = None
+        for i in range(len(messages)):
+            if self._get_role(messages[i]) == "user":
+                last_idx = i
+        return last_idx
+
+    @staticmethod
+    def _message_content_to_text(content: Union[str, list, None]) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        # 多模态/结构化 content：尽量提取 text 字段，其他内容用占位表示
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if "text" in item:
+                    parts.append(str(item.get("text") or ""))
+                elif "image_url" in item:
+                    parts.append("[image]")
+                else:
+                    parts.append("[content]")
+            else:
+                parts.append(str(item))
+        return "\n".join([p for p in parts if p])
+
+    def _build_transcript(self, msgs: List[Union[dict, Message]]) -> str:
+        lines: List[str] = []
+        for m in msgs:
+            role = self._get_role(m)
+            if role == "system":
+                continue
+            if isinstance(m, dict):
+                content = self._message_content_to_text(m.get("content"))
+                name = m.get("name")
+            else:
+                content = self._message_content_to_text(m.content)
+                name = m.name
+            if role == "tool":
+                prefix = f"Tool({name or ''})"
+            elif role == "assistant":
+                prefix = "Assistant"
+            else:
+                prefix = "User"
+            if content:
+                lines.append(f"{prefix}: {content}")
+        return "\n".join(lines).strip()
+
+    async def _compress_history_inplace_or_raise(
+        self,
+        *,
+        messages: List[Union[dict, Message]],
+        system_msgs: Optional[List[Union[dict, Message]]],
+        supports_images: bool,
+        tools_tokens: int = 0,
+    ) -> None:
+        """
+        将非 system 历史压缩为 1 条 assistant 摘要，并保留“最近一条 user 消息”作为当前请求。
+        - system 原样保留（system_msgs 不修改）
+        - messages 原地替换为 [assistant(摘要), user(当前请求)]
+        - 任何失败/超限：抛 TokenLimitExceeded，提示用户重新开启会话
+        """
+        if not self.max_input_tokens:
+            return
+
+        self._require_summarizer_config()
+
+        last_user_idx = self._find_last_user_index(messages)
+        if last_user_idx is None:
+            raise TokenLimitExceeded(
+                f"{self._TOKEN_LIMIT_REOPEN_SESSION_MSG}（未找到用户消息，无法压缩会话）"
+            )
+
+        current_user = messages[last_user_idx]
+        if self._get_role(current_user) != "user":
+            raise TokenLimitExceeded(
+                f"{self._TOKEN_LIMIT_REOPEN_SESSION_MSG}（当前请求消息不合法）"
+            )
+
+        history_msgs = [m for i, m in enumerate(messages) if i != last_user_idx]
+        transcript = self._build_transcript(history_msgs)
+        if not transcript:
+            # 单条 user 消息过长等情况，压缩无意义：直接报错
+            raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+
+        try:
+            summarizer = LLM(config_name="summarizer")
+            summary_text = await summarizer.ask(
+                messages=[
+                    Message.user_message(
+                        self._SUMMARIZER_USER_PROMPT.format(transcript=transcript)
+                    )
+                ],
+                system_msgs=[Message.system_message(self._SUMMARIZER_SYSTEM_PROMPT)],
+                stream=False,
+                temperature=0.0,
+                enable_history_compress=False,
+            )
+        except TokenLimitExceeded:
+            raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+        except Exception as e:
+            raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG) from e
+
+        if not summary_text or not str(summary_text).strip():
+            raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+
+        summary_msg: Union[dict, Message]
+        if isinstance(current_user, dict):
+            summary_msg = {"role": "assistant", "content": str(summary_text).strip()}
+        else:
+            summary_msg = Message.assistant_message(str(summary_text).strip())
+
+        # 写回持久化：直接替换 messages 列表内容
+        messages[:] = [summary_msg, current_user]
+
+        # 重新校验 token：system + (摘要+user) + tools_tokens 必须 <= max_input_tokens
+        formatted_system = (
+            self.format_messages(system_msgs, supports_images) if system_msgs else []
+        )
+        formatted_conv = self.format_messages(messages, supports_images)
+        total_tokens = self.count_message_tokens(
+            formatted_system + formatted_conv
+        ) + int(tools_tokens or 0)
+        if total_tokens > self.max_input_tokens:
+            raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+
     @staticmethod
     def format_messages(
         messages: List[Union[dict, Message]], supports_images: bool = False
@@ -415,9 +580,10 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=(
+            retry_if_exception_type((OpenAIError, Exception, ValueError))
+            & retry_if_not_exception_type(TokenLimitExceeded)
+        ),
     )
     async def ask(
         self,
@@ -425,6 +591,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = False,
         temperature: Optional[float] = None,
+        enable_history_compress: bool = True,
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -448,25 +615,34 @@ class LLM:
             # Check if the model supports images
             supports_images = self.model in MULTIMODAL_MODELS
 
-            # Format system and user messages with image support check
-            if system_msgs:
-                system_msgs = self.format_messages(system_msgs, supports_images)
-                messages = system_msgs + self.format_messages(messages, supports_images)
-            else:
-                messages = self.format_messages(messages, supports_images)
+            # 先用原始入参计算 tokens（避免丢失 Message 列表引用，便于持久化写回）
+            formatted_system = (
+                self.format_messages(system_msgs, supports_images)
+                if system_msgs
+                else []
+            )
+            formatted_conv = self.format_messages(messages, supports_images)
+            input_tokens = self.count_message_tokens(formatted_system + formatted_conv)
 
-            # Calculate input token count
-            input_tokens = self.count_message_tokens(messages)
-
-            # If token limit exceeded, truncate messages
             if self.max_input_tokens and input_tokens > self.max_input_tokens:
-                messages = self.truncate_messages(messages, self.max_input_tokens)
-                input_tokens = self.count_message_tokens(messages)
-                logger.debug(f"input tokens after truncate: {input_tokens}")
+                if not enable_history_compress:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+                await self._compress_history_inplace_or_raise(
+                    messages=messages,
+                    system_msgs=system_msgs,
+                    supports_images=supports_images,
+                    tools_tokens=0,
+                )
+                formatted_conv = self.format_messages(messages, supports_images)
+                input_tokens = self.count_message_tokens(
+                    formatted_system + formatted_conv
+                )
+                if input_tokens > self.max_input_tokens:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
 
             params = {
                 "model": self.model,
-                "messages": messages,
+                "messages": formatted_system + formatted_conv,
                 "presence_penalty": 1.5,
             }
 
@@ -554,10 +730,10 @@ class LLM:
             # Re-raise token limit errors without logging
             raise
         except ValueError:
-            logger.exception(f"Validation error")
+            logger.exception("Validation error")
             raise
         except OpenAIError as oe:
-            logger.exception(f"OpenAI API error")
+            logger.exception("OpenAI API error")
             if isinstance(oe, AuthenticationError):
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
@@ -572,9 +748,10 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=(
+            retry_if_exception_type((OpenAIError, Exception, ValueError))
+            & retry_if_not_exception_type(TokenLimitExceeded)
+        ),
     )
     async def ask_with_images(
         self,
@@ -583,6 +760,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = False,
         temperature: Optional[float] = None,
+        enable_history_compress: bool = True,
     ) -> str:
         """
         Send a prompt with images to the LLM and get the response.
@@ -647,6 +825,18 @@ class LLM:
             # Update the message with multimodal content
             last_message["content"] = multimodal_content
 
+            # 同步回写到原始 messages（用于超限压缩时的持久化写回，避免丢失图片信息）
+            raw_last_user_idx = self._find_last_user_index(messages)
+            if raw_last_user_idx is None:
+                raise ValueError(
+                    "The last message must be from the user to attach images"
+                )
+            raw_last_user = messages[raw_last_user_idx]
+            if isinstance(raw_last_user, dict):
+                raw_last_user["content"] = multimodal_content
+            else:
+                raw_last_user.content = multimodal_content
+
             # Add system messages if provided
             if system_msgs:
                 all_messages = (
@@ -659,12 +849,30 @@ class LLM:
             # Calculate tokens and check limits
             input_tokens = self.count_message_tokens(all_messages)
 
-            # If token limit exceeded, truncate messages
             if self.max_input_tokens and input_tokens > self.max_input_tokens:
-                all_messages = self.truncate_messages(
-                    all_messages, self.max_input_tokens
+                if not enable_history_compress:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+                # ask_with_images 需要保留最后一条 user（包含图片）；压缩写回原始 messages 列表
+                await self._compress_history_inplace_or_raise(
+                    messages=messages,
+                    system_msgs=system_msgs,
+                    supports_images=True,
+                    tools_tokens=0,
                 )
+                # 重新构造 all_messages：system + (摘要+当前 user + images 已附着在 current user 上)
+                formatted_messages = self.format_messages(
+                    messages, supports_images=True
+                )
+                if system_msgs:
+                    all_messages = (
+                        self.format_messages(system_msgs, supports_images=True)
+                        + formatted_messages
+                    )
+                else:
+                    all_messages = formatted_messages
                 input_tokens = self.count_message_tokens(all_messages)
+                if input_tokens > self.max_input_tokens:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
 
             # Set up API parameters
             params = {
@@ -731,9 +939,10 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=(
+            retry_if_exception_type((OpenAIError, Exception, ValueError))
+            & retry_if_not_exception_type(TokenLimitExceeded)
+        ),
     )
     async def ask_tool(
         self,
@@ -743,6 +952,7 @@ class LLM:
         tools: Optional[List[dict]] = None,
         tool_choice: str = ToolChoice.AUTO.value,  # type: ignore
         temperature: Optional[float] = None,
+        enable_history_compress: bool = True,
         **kwargs,
     ) -> ChatCompletionMessage | None:
         """
@@ -770,34 +980,46 @@ class LLM:
             # Check if the model supports images
             supports_images = self.model in MULTIMODAL_MODELS
 
-            # Format messages
-            if system_msgs:
-                system_msgs = self.format_messages(system_msgs, supports_images)
-                messages = system_msgs + self.format_messages(messages, supports_images)
-            else:
-                messages = self.format_messages(messages, supports_images)
-
-            # Calculate input token count
-            input_tokens = self.count_message_tokens(messages)
+            # 计算 tools tokens
             # If there are tools, calculate token count for tool descriptions
             tools_tokens = 0
             if tools:
                 for tool in tools:
                     tools_tokens += self.count_tokens(str(tool))
-            input_tokens += tools_tokens
 
-            # If token limit exceeded, truncate messages
+            formatted_system = (
+                self.format_messages(system_msgs, supports_images)
+                if system_msgs
+                else []
+            )
+            formatted_conv = self.format_messages(messages, supports_images)
+            input_tokens = (
+                self.count_message_tokens(formatted_system + formatted_conv)
+                + tools_tokens
+            )
+
             if self.max_input_tokens and input_tokens > self.max_input_tokens:
-                messages = self.truncate_messages(
-                    messages, self.max_input_tokens - tools_tokens
+                if not enable_history_compress:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+                await self._compress_history_inplace_or_raise(
+                    messages=messages,
+                    system_msgs=system_msgs,
+                    supports_images=supports_images,
+                    tools_tokens=tools_tokens,
                 )
-                input_tokens = self.count_message_tokens(messages) + tools_tokens
-                logger.info(f"input tokens after truncate: {input_tokens}")
+                formatted_conv = self.format_messages(messages, supports_images)
+                input_tokens = (
+                    self.count_message_tokens(formatted_system + formatted_conv)
+                    + tools_tokens
+                )
+                logger.info(f"input tokens after compress: {input_tokens}")
+                if input_tokens > self.max_input_tokens:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
 
             # Set up the completion request
             params = {
                 "model": self.model,
-                "messages": messages,
+                "messages": formatted_system + formatted_conv,
                 "tools": tools,
                 "tool_choice": tool_choice,
                 "timeout": timeout,
@@ -861,6 +1083,7 @@ class LLM:
         messages: List[Union[dict, Message]],
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         temperature: Optional[float] = None,
+        enable_history_compress: bool = True,
     ):
         """
         流式调用LLM，逐token返回（async generator）
@@ -881,26 +1104,35 @@ class LLM:
             # 检查模型是否支持多模态
             supports_images = self.model in MULTIMODAL_MODELS
 
-            # 格式化消息
-            if system_msgs:
-                system_msgs = self.format_messages(system_msgs, supports_images)
-                messages = system_msgs + self.format_messages(messages, supports_images)
-            else:
-                messages = self.format_messages(messages, supports_images)
+            formatted_system = (
+                self.format_messages(system_msgs, supports_images)
+                if system_msgs
+                else []
+            )
+            formatted_conv = self.format_messages(messages, supports_images)
+            input_tokens = self.count_message_tokens(formatted_system + formatted_conv)
 
-            # 计算token数
-            input_tokens = self.count_message_tokens(messages)
-
-            # 如果超过token限制，截断消息
             if self.max_input_tokens and input_tokens > self.max_input_tokens:
-                messages = self.truncate_messages(messages, self.max_input_tokens)
-                input_tokens = self.count_message_tokens(messages)
-                logger.debug(f"流式输入tokens（截断后）: {input_tokens}")
+                if not enable_history_compress:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
+                await self._compress_history_inplace_or_raise(
+                    messages=messages,
+                    system_msgs=system_msgs,
+                    supports_images=supports_images,
+                    tools_tokens=0,
+                )
+                formatted_conv = self.format_messages(messages, supports_images)
+                input_tokens = self.count_message_tokens(
+                    formatted_system + formatted_conv
+                )
+                logger.debug(f"流式输入tokens（压缩后）: {input_tokens}")
+                if input_tokens > self.max_input_tokens:
+                    raise TokenLimitExceeded(self._TOKEN_LIMIT_REOPEN_SESSION_MSG)
 
             # 构造请求参数
             params = {
                 "model": self.model,
-                "messages": messages,
+                "messages": formatted_system + formatted_conv,
                 "stream": True,  # 启用流式
             }
 

@@ -39,6 +39,14 @@ api_key = "YOUR_API_KEY"                   # Your API key for vision model
 max_tokens = 8192                          # Maximum number of tokens in the response
 temperature = 0.0                          # Controls randomness for vision model
 
+# 独立 summarizer 配置（用于会话压缩/摘要）
+[llm.summarizer]
+model = "claude-3-7-sonnet-20250219"
+base_url = "https://api.anthropic.com/v1/"
+api_key = "YOUR_API_KEY"
+max_tokens = 2048
+temperature = 0.0
+
 # [llm.vision] #OLLAMA VISION:
 # api_type = 'ollama'
 # model = "llama3.2-vision"

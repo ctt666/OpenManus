@@ -116,6 +116,38 @@ class SandboxSettings(BaseModel):
         description="Local workspace path, None means use config.workspace_root",
     )
 
+
+class GuardrailBoundarySettings(BaseModel):
+    """Guardrail configuration for a specific boundary."""
+
+    enabled: bool = Field(False, description="Whether guardrails are enabled")
+    guards: List[str] = Field(default_factory=list, description="Guardrail ids/paths")
+
+
+class GuardrailRetrySettings(BaseModel):
+    max_attempts: int = Field(3, description="Maximum retry attempts for repair")
+
+
+class GuardrailSettings(BaseModel):
+    """Global guardrail configuration."""
+
+    enabled: bool = Field(False, description="Global guardrail switch")
+
+    # Boundaries (user-level I/O)
+    agent_input: GuardrailBoundarySettings = Field(
+        default_factory=GuardrailBoundarySettings
+    )
+    agent_output: GuardrailBoundarySettings = Field(
+        default_factory=GuardrailBoundarySettings
+    )
+    flow_input: GuardrailBoundarySettings = Field(default_factory=GuardrailBoundarySettings)
+    flow_output: GuardrailBoundarySettings = Field(
+        default_factory=GuardrailBoundarySettings
+    )
+
+    retry: GuardrailRetrySettings = Field(default_factory=GuardrailRetrySettings)
+
+
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server"""
 
@@ -185,6 +217,9 @@ class AppConfig(BaseModel):
     mcp_config: Optional[MCPSettings] = Field(None, description="MCP configuration")
     run_flow_config: Optional[RunflowSettings] = Field(
         None, description="Run flow configuration"
+    )
+    guardrail: GuardrailSettings = Field(
+        default_factory=GuardrailSettings, description="Guardrail configuration"
     )
 
 
@@ -299,6 +334,14 @@ class Config:
             run_flow_settings = RunflowSettings(**run_flow_config)
         else:
             run_flow_settings = RunflowSettings()
+
+        guardrail_config = raw_config.get("guardrail", {}) or {}
+        try:
+            guardrail_settings = GuardrailSettings(**guardrail_config)
+        except Exception as e:
+            # Fail-closed: refuse to start when guardrail config is invalid
+            raise ValueError(f"Failed to load guardrail config: {e}") from e
+
         config_dict = {
             "llm": {
                 "default": default_settings,
@@ -312,6 +355,7 @@ class Config:
             "search_config": search_settings,
             "mcp_config": mcp_settings,
             "run_flow_config": run_flow_settings,
+            "guardrail": guardrail_settings,
         }
         # Add screenshot config if present
         if screenshot_config := raw_config.get("screenshot"):
@@ -348,6 +392,11 @@ class Config:
     def run_flow_config(self) -> RunflowSettings:
         """Get the Run Flow configuration"""
         return self._config.run_flow_config
+
+    @property
+    def guardrail(self) -> GuardrailSettings:
+        """Get the Guardrail configuration"""
+        return self._config.guardrail
 
     @property
     def workspace_root(self) -> Path:

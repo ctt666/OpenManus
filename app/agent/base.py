@@ -5,11 +5,17 @@ from typing import Callable, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.agent.guardrail import GuardrailAgent
+from app.agent.guardrail import (
+    GuardrailAction,
+    GuardrailAgent,
+    GuardrailBoundary,
+    GuardrailEngine,
+)
+from app.config import config
+from app.exceptions import TokenLimitExceeded
 from app.llm import LLM
 from app.logger import logger
-from app.sandbox.client import SANDBOX_CLIENT
-from app.schema import ROLE_TYPE, AgentState, Memory, Message
+from app.schema import AgentState, Memory, Message
 
 
 class BaseAgent(BaseModel, ABC):
@@ -66,6 +72,13 @@ class BaseAgent(BaseModel, ABC):
             self.llm = LLM(config_name=self.name.lower())
         if not isinstance(self.memory, Memory):
             self.memory = Memory()
+        # Ensure guardrail repair uses the same LLM config as this agent
+        try:
+            if getattr(self, "guardrail_agent", None) is not None:
+                self.guardrail_agent.llm = self.llm
+        except Exception:
+            # Avoid failing initialization due to guardrail wiring issues
+            pass
         return self
 
     @asynccontextmanager
@@ -148,8 +161,82 @@ class BaseAgent(BaseModel, ABC):
         """
         # 存储多模态参数到实例（无论是否为None都要设置，避免保留上次的值）
         self.multimodal_paths = multimodal_paths
-        # if request:
-        #     self.memory.add_message(Message.user_message(request))
+        if request:
+            self.memory.add_message(Message.user_message(request))
+
+        # ---------------- Guardrails: user-level input ----------------
+        guard_settings = getattr(config, "guardrail", None)
+        agent_in_enabled = bool(self.enable_guardrail) or bool(
+            guard_settings
+            and getattr(guard_settings, "enabled", False)
+            and getattr(getattr(guard_settings, "agent_input", None), "enabled", False)
+        )
+        agent_out_enabled = bool(self.enable_guardrail) or bool(
+            guard_settings
+            and getattr(guard_settings, "enabled", False)
+            and getattr(getattr(guard_settings, "agent_output", None), "enabled", False)
+        )
+
+        agent_input_specs = []
+        if (
+            guard_settings
+            and getattr(guard_settings, "enabled", False)
+            and getattr(getattr(guard_settings, "agent_input", None), "enabled", False)
+        ):
+            agent_input_specs.extend(getattr(guard_settings.agent_input, "guards", []))
+        agent_input_specs.extend(self.input_guardrails)
+
+        agent_output_specs = []
+        if (
+            guard_settings
+            and getattr(guard_settings, "enabled", False)
+            and getattr(getattr(guard_settings, "agent_output", None), "enabled", False)
+        ):
+            agent_output_specs.extend(
+                getattr(guard_settings.agent_output, "guards", [])
+            )
+        agent_output_specs.extend(self.output_guardrails)
+
+        max_retries = int(self.guardrail_retry or 0) if self.enable_guardrail else 0
+        if guard_settings and getattr(guard_settings, "enabled", False):
+            max_retries = max(
+                max_retries,
+                int(
+                    getattr(getattr(guard_settings, "retry", None), "max_attempts", 0)
+                    or 0
+                ),
+            )
+
+        if agent_in_enabled:
+            if request:
+                in_res = await GuardrailEngine.enforce(
+                    boundary=GuardrailBoundary.AGENT_INPUT,
+                    text=request,
+                    guardrails=agent_input_specs,
+                    enabled=agent_in_enabled,
+                    policy=[GuardrailAction.REDACT, GuardrailAction.BLOCK],
+                    max_retries=0,
+                    guardrail_agent=self.guardrail_agent,
+                    agent_name=self.name,
+                )
+                if in_res.blocked:
+                    return in_res.text
+                request = in_res.text
+
+            if context:
+                ctx_res = await GuardrailEngine.enforce(
+                    boundary=GuardrailBoundary.AGENT_INPUT,
+                    text=context,
+                    guardrails=agent_input_specs,
+                    enabled=agent_in_enabled,
+                    policy=[GuardrailAction.REDACT, GuardrailAction.BLOCK],
+                    max_retries=0,
+                    guardrail_agent=self.guardrail_agent,
+                    agent_name=self.name,
+                )
+                if ctx_res.blocked:
+                    return ctx_res.text
+                context = ctx_res.text
 
         step = 0
         consecutive_duplicates = 0
@@ -207,6 +294,9 @@ class BaseAgent(BaseModel, ABC):
 
             except Exception as e:
                 logger.error(f"🚨 Error in step {step}: {e}")
+                # 对于 TokenLimitExceeded：直接抛出，让 server/flow 标记任务失败并提示用户重新开启会话
+                if isinstance(e, TokenLimitExceeded):
+                    raise
                 self.memory.add_message(
                     Message.assistant_message(f"Error encountered: {str(e)}")
                 )
@@ -214,6 +304,25 @@ class BaseAgent(BaseModel, ABC):
 
         # 总结并返回结果（支持流式）
         summary = await self.summarize(request, stream_callback=stream_callback)
+
+        # ---------------- Guardrails: user-level output ----------------
+        if agent_out_enabled and summary:
+            out_res = await GuardrailEngine.enforce(
+                boundary=GuardrailBoundary.AGENT_OUTPUT,
+                text=summary,
+                guardrails=agent_output_specs,
+                enabled=agent_out_enabled,
+                policy=[
+                    GuardrailAction.REDACT,
+                    GuardrailAction.RETRY,
+                    GuardrailAction.BLOCK,
+                ],
+                max_retries=max(0, max_retries),
+                guardrail_agent=self.guardrail_agent,
+                agent_name=self.name,
+            )
+            return out_res.text
+
         return summary
 
     @abstractmethod

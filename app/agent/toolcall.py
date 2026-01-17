@@ -1,10 +1,10 @@
 import asyncio
-import json
 from typing import Any, List, Optional, Union
 
 from pydantic import Field
 
 from app.agent.react import ReActAgent
+from app.agent.tool_executor import ToolExecutor
 from app.config import config
 from app.exceptions import TokenLimitExceeded
 from app.logger import logger
@@ -33,6 +33,7 @@ class ToolCallAgent(ReActAgent):
 
     tool_calls: List[ToolCall] = Field(default_factory=list)
     _current_base64_image: Optional[str] = None
+    tool_executor: ToolExecutor = Field(default_factory=ToolExecutor)
 
     # Sandbox management (Stage 3 - Agent integration)
     sandbox_manager: Optional[SandboxManager] = None
@@ -183,6 +184,17 @@ class ToolCallAgent(ReActAgent):
         #     self.messages += [user_msg]
 
         try:
+            tools_params = self.tool_executor.get_tools_params(self.available_tools)
+            if len(tools_params) != len(self.available_tools.to_params()):
+                disabled = [
+                    name
+                    for name in getattr(self.available_tools, "tool_map", {}).keys()
+                    if not self.tool_executor.is_tool_enabled(name)
+                ]
+                if disabled:
+                    logger.warning(
+                        f"🧯 Tools temporarily disabled for agent '{self.name}': {disabled}"
+                    )
             # Get response with tool options
             response = await self.llm.ask_tool(
                 messages=self.messages,
@@ -191,7 +203,7 @@ class ToolCallAgent(ReActAgent):
                     if final_system_prompt
                     else None
                 ),
-                tools=self.available_tools.to_params(),
+                tools=tools_params,
                 tool_choice=self.tool_choices,
             )
             # print(f"tool call agent system messages===============: {self.system_prompt}\n, user massages================: {self.format_messages()}")
@@ -202,19 +214,13 @@ class ToolCallAgent(ReActAgent):
         except ValueError:
             raise
         except Exception as e:
-            # Check if this is a RetryError containing TokenLimitExceeded
-            if hasattr(e, "__cause__") and isinstance(e.__cause__, TokenLimitExceeded):
-                token_limit_error = e.__cause__
-                logger.error(
-                    f"🚨 Token limit error (from RetryError): {token_limit_error}"
-                )
-                self.memory.add_message(
-                    Message.assistant_message(
-                        f"Maximum token limit reached, cannot continue execution: {str(token_limit_error)}"
-                    )
-                )
-                self.state = AgentState.FINISHED
-                return False, ""
+            # 按需求：TokenLimitExceeded 一律直接抛出（优先使用 RetryError.__cause__）
+            cause = getattr(e, "__cause__", None)
+            if isinstance(cause, TokenLimitExceeded):
+                logger.error(f"🚨 Token limit error (from RetryError): {cause}")
+                raise cause
+            if isinstance(e, TokenLimitExceeded):
+                raise e
             raise
 
         self.tool_calls = tool_calls = (
@@ -324,31 +330,38 @@ class ToolCallAgent(ReActAgent):
             return f"Error: Unknown tool '{name}'"
 
         try:
-            # Parse arguments
-            args = json.loads(command.function.arguments or "{}")
 
-            # Determine execution environment (host vs sandbox)
-            use_sandbox = self._tool_needs_sandbox(name)
-            if use_sandbox:
-                sandbox_id = await self._ensure_sandbox()
-                if sandbox_id:
-                    # Attach sandbox_id to tool arguments
-                    # Tools that support sandbox execution will consume this parameter
-                    args.setdefault("sandbox_id", sandbox_id)
-                    logger.info(
-                        f"🔧 Activating sandbox tool '{name}' in sandbox '{sandbox_id}'..."
-                    )
+            async def _prepare_args(tool_name: str, args: dict) -> dict:
+                # Determine execution environment (host vs sandbox)
+                use_sandbox = self._tool_needs_sandbox(tool_name)
+                if use_sandbox:
+                    sandbox_id = await self._ensure_sandbox()
+                    if sandbox_id:
+                        args.setdefault("sandbox_id", sandbox_id)
+                        logger.info(
+                            f"🔧 Activating sandbox tool '{tool_name}' in sandbox '{sandbox_id}'..."
+                        )
+                    else:
+                        logger.warning(
+                            f"Sandbox requested for tool '{tool_name}' but could not be created. "
+                            f"Falling back to host execution."
+                        )
                 else:
-                    logger.warning(
-                        f"Sandbox requested for tool '{name}' but could not be created. "
-                        f"Falling back to host execution."
-                    )
-            else:
-                logger.info(f"🔧 Activating host tool: '{name}'...")
+                    logger.info(f"🔧 Activating host tool: '{tool_name}'...")
+                return args
 
-            # Execute the tool
-            logger.info(f"🔧 Activating tool: '{name}', args: {args}")
-            result = await self.available_tools.execute(name=name, tool_input=args)
+            result, used_args_str = await self.tool_executor.execute_tool_call(
+                command=command,
+                available_tools=self.available_tools,
+                llm=self.llm,
+                messages=self.messages,
+                agent_name=self.name,
+                prepare_args=_prepare_args,
+                tool_choice_required=ToolChoice.REQUIRED.value,
+            )
+            if used_args_str is not None:
+                # Write back arguments so tool message records actual executed args (including LLM repair)
+                command.function.arguments = used_args_str
 
             # 特殊处理 ask_human 工具 - 设置标志让 agent 暂停执行
             if (
@@ -383,12 +396,6 @@ class ToolCallAgent(ReActAgent):
             )
 
             return observation
-        except json.JSONDecodeError:
-            error_msg = f"Error parsing arguments for {name}: Invalid JSON format"
-            logger.error(
-                f"📝 Oops! The arguments for '{name}' don't make sense - invalid JSON, arguments:{command.function.arguments}"
-            )
-            return f"Error: {error_msg}"
         except Exception as e:
             error_msg = f"⚠️ Tool '{name}' encountered a problem: {str(e)}"
             logger.exception(error_msg)
